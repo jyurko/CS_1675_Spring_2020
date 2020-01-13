@@ -1,0 +1,166 @@
+---
+title: "Week 2: Recitation: Programming Intro"
+author: "Dr. Joseph P. Yurko"
+date: "1/13/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Big section
+
+## Sub section
+
+### sub sub section
+
+#### 4th section
+
+## Load packages
+
+```{r, load_packages, warning=FALSE, message=FALSE}
+library(dplyr)
+library(ggplot2)
+```
+
+## Practice dataset
+
+Work with the `mtcars` data set. A new sentence.  
+
+A new paragraph.  
+
+```{r, practice_mtcars}
+### mtcars is available in base R
+mtcars
+```
+
+Use the `glimpse()` function to "look" at a data set.  
+
+```{r}
+glimpse(mtcars)
+```
+
+```{r}
+mtcars %>% glimpse()
+```
+
+Check data types.  
+
+```{r}
+class(mtcars$mpg)
+```
+
+```{r}
+class(mtcars)
+```
+
+```{r}
+mtcars %>% 
+  tbl_df() %>% 
+  class()
+```
+
+```{r}
+mtcars %>% 
+  tbl_df() %>% 
+  tibble::rownames_to_column("my_rowname") %>% 
+  tibble::rowid_to_column() %>% 
+  mutate(car_name = rownames(mtcars),
+         mpg_2 = 2 * mpg)
+```
+
+```{r}
+mtcars
+```
+
+```{r}
+mtcars_b <- mtcars %>% 
+  tbl_df() %>% 
+  tibble::rownames_to_column("my_rowname") %>% 
+  tibble::rowid_to_column() %>% 
+  mutate(car_name = rownames(mtcars),
+         mpg_2 = 2 * mpg)
+```
+
+## Data manipulation
+
+### Select columns
+
+Use the `select()` to subset columns.  
+
+```{r}
+mtcars_b %>% 
+  dplyr::select(mpg)
+```
+
+```{r}
+mtcars_b %>% 
+  select(mpg, cyl, my_rowname)
+```
+
+```{r}
+mtcars_b %>% 
+  select(mpg) %>% 
+  class()
+```
+
+```{r}
+mtcars_b %>% 
+  select(1:4)
+```
+
+```{r}
+mtcars_b %>% 
+  select(c("mpg", "cyl", "disp", "car_name"))
+```
+
+```{r}
+mtcars_b %>% 
+  select(starts_with("m"))
+```
+
+### Filtering
+
+```{r}
+mtcars_b %>% 
+  filter(mpg > 20)
+```
+
+```{r}
+mtcars_b %>% 
+  filter(mpg > 20 & cyl == 4)
+```
+
+## Grouping
+
+```{r}
+mtcars %>% 
+  distinct(cyl)
+```
+
+```{r}
+mtcars %>% 
+  count(cyl)
+```
+
+```{r}
+mtcars_b %>% 
+  group_by(cyl)
+```
+
+```{r}
+mtcars_b %>% 
+  group_by(cyl) %>% 
+  summarise(num_rows = n())
+```
+
+
+```{r}
+mtcars_b %>% 
+  group_by(cyl) %>% 
+  summarise(num_rows = n(),
+            avg_mpg = mean(mpg),
+            sd_mpg = sd(mpg))
+```
+
