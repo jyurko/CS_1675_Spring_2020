@@ -6,4 +6,9 @@ This course provides an overview of popular supervised learning methods, ranging
 * Course introduction.  
 * Calculus, matrix math, and probability review.  
 
-![PittSCIlogo](https://pbs.twimg.com/profile_images/881872023546408960/coamC-xz_400x400.jpg)
+### Week 02
+* Bernoulli, Binomial, Beta, and Gaussian distributions  
+* Maximum Likelihood Estimates (MLEs)  
+* Bayesian approach with conjugate priors  
+* Uncertainty and credible intervals  
+* Sample size effects  
