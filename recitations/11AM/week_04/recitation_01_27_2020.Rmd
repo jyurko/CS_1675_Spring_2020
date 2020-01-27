@@ -1,0 +1,197 @@
+---
+title: "Recitation Week 03"
+subtitle: "Log-prior and Log-posterior functions: Programming"
+author: "Dr. Joseph P. Yurko"
+date: "1/27/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, load_packages}
+library(dplyr)
+library(ggplot2)
+```
+
+
+Let's generate some random numbers.  
+
+```{r, create_random_values}
+mu_true <- 254.5
+sigma_true <- 2.5
+
+set.seed(5001)
+x <- rnorm(n = 50, mean = mu_true, sd = sigma_true)
+```
+
+The log-prior.  
+
+```{r, create_logprior}
+my_logprior <- function(theta, my_info)
+{
+  # unknown mean is the first element in theta
+  lik_mu <- theta[1]
+  # the unkonwn noise is the second element
+  lik_sigma <- theta[2]
+  
+  # calculate the log-prior densities
+  dnorm(x = lik_mu,
+        mean = my_info$mu_0,
+        sd = my_info$tau_0,
+        log = TRUE) + 
+    dunif(x = lik_sigma,
+          min = my_info$sigma_lwr,
+          max = my_info$sigma_upr,
+          log = TRUE)
+}
+```
+
+Create a grid of points between the two unknowns.  
+
+```{r, make_parameter_grid}
+param_grid <- expand.grid(mu = seq(245, 265, length.out = 201),
+                          sigma = seq(0.5, 20.5, length.out = 201),
+                          KEEP.OUT.ATTRS = FALSE,
+                          stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tbl_df()
+```
+
+Specify the list of required information for the function.  
+
+```{r, create_param_list}
+hyper_list <- list(
+  mu_0 = 250,
+  tau_0 = 2,
+  sigma_lwr = 0.5,
+  sigma_upr = 20.5
+)
+
+hyper_list
+```
+
+Define a wrapper function to call the log-density evaluation.  
+
+```{r}
+eval_logdensity <- function(mu_val, sigma_val, my_logdens, my_info)
+{
+  my_logdens(c(mu_val, sigma_val), my_info)
+}
+```
+
+In `R` there are the suite of `apply` functions. The `tidy` analogs are in the `purrr`.  
+
+```{r}
+log_prior_result <- purrr::map2_dbl(param_grid$mu,
+                                    param_grid$sigma,
+                                    eval_logdensity,
+                                    my_logdens = my_logprior,
+                                    my_info = hyper_list)
+```
+
+purrr::map_dbl(), purrr::map2_dbl(), purrr::pmap_dbl()
+
+Visualize the log-prior surface.  
+
+```{r}
+param_grid %>% 
+  mutate(log_dens = log_prior_result) %>% 
+  mutate(log_dens_2 = log_dens - max(log_dens)) %>% 
+  ggplot(mapping = aes(x = mu, y = sigma)) +
+  geom_raster(mapping = aes(fill = log_dens_2)) +
+  stat_contour(mapping = aes(z = log_dens_2),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 2.2, 
+               color = "black") +
+  scale_fill_viridis_c(guide = FALSE,
+                       limits = log(c(0.01/100, 1.0))) +
+  labs(x = expression(mu), y = expression(sigma)) +
+  theme_bw()
+```
+
+Now let's create the posterior.  
+
+```{r}
+my_logpost <- function(theta, my_info)
+{
+  # unknown mean is the first element in theta
+  lik_mu <- theta[1]
+  # the unkonwn noise is the second element
+  lik_sigma <- theta[2]
+  
+  # log-likelihood
+  log_lik <- sum(dnorm(x = my_info$xobs,
+                       mean = lik_mu,
+                       sd = lik_sigma,
+                       log = TRUE))
+  
+  # calculate the log-prior densities
+  log_prior <- dnorm(x = lik_mu,
+        mean = my_info$mu_0,
+        sd = my_info$tau_0,
+        log = TRUE) + 
+    dunif(x = lik_sigma,
+          min = my_info$sigma_lwr,
+          max = my_info$sigma_upr,
+          log = TRUE)
+  
+  # add the log-lik to the log-prior
+  log_lik + log_prior
+}
+```
+
+Create a new list which includes the observed values.  
+
+```{r}
+info_N05 <- list(
+  xobs = x[1:5],
+  mu_0 = 250,
+  tau_0 = 2,
+  sigma_lwr = 0.5,
+  sigma_upr = 20.5
+)
+```
+
+Evaluate the log-posterior over the grid.  
+
+```{r}
+log_post_result <- purrr::map2_dbl(param_grid$mu,
+                                    param_grid$sigma,
+                                    eval_logdensity,
+                                    my_logdens = my_logpost,
+                                    my_info = info_N05)
+```
+
+Visualize the log-posterior.  
+
+```{r}
+param_grid %>% 
+  mutate(log_dens = log_post_result) %>% 
+  mutate(log_dens_2 = log_dens - max(log_dens)) %>% 
+  ggplot(mapping = aes(x = mu, y = sigma)) +
+  geom_raster(mapping = aes(fill = log_dens_2)) +
+  stat_contour(mapping = aes(z = log_dens_2),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 2.2, 
+               color = "black") +
+  scale_fill_viridis_c(guide = FALSE,
+                       limits = log(c(0.01/100, 1.0))) +
+  labs(x = expression(mu), y = expression(sigma)) +
+  theme_bw()
+```
+
+Optimization to find the mode.  
+
+```{r}
+map_result <- optim(c(250, 10),
+                    my_logpost,
+                    gr = NULL,
+                    info_N05,
+                    method = "BFGS",
+                    hessian = TRUE,
+                    control = list(fnscale = -1, maxit = 1001))
+
+map_result
+```
+

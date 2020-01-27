@@ -1,0 +1,170 @@
+---
+title: "Recitation Week 03"
+subtitle: "Log-prior and Log-posterior functions: Programming"
+author: "Dr. Joseph P. Yurko"
+date: "1/27/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load the packages.  
+
+```{r, load_packages}
+library(dplyr)
+library(ggplot2)
+```
+
+Generate the data.  
+
+```{r}
+mu_true <- 254.5
+sigma_true <- 2.5
+
+set.seed(5001)
+x <- rnorm(n = 50, mean = mu_true, sd = sigma_true)
+```
+
+Create a function for the log-prior.  
+
+```{r}
+my_logprior <- function(theta, my_info)
+{
+  lik_mu <- theta[1]
+  lik_sigma <- theta[2]
+  
+  dnorm(x = lik_mu,
+        mean = my_info$mu_0,
+        sd = my_info$tau_0,
+        log = TRUE) + 
+    dunif(x = lik_sigma,
+          min = my_info$sigma_lwr,
+          max = my_info$sigma_upr,
+          log = TRUE)
+}
+```
+
+Evaluate the log-prior over a grid.  
+
+```{r}
+param_grid <- expand.grid(mu = seq(245, 265, length.out = 201),
+                          sigma = seq(0.5, 20.5, length.out = 201),
+                          KEEP.OUT.ATTRS = FALSE,
+                          stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tbl_df()
+```
+
+Define the list of hyperparameters.  
+
+```{r}
+hyper_list <- list(
+  mu_0 = 250,
+  tau_0 = 2,
+  sigma_lwr = 0.5,
+  sigma_upr = 20.5
+)
+
+hyper_list
+```
+
+Create a wrapper function to evaluate the log-prior.  
+
+```{r}
+eval_logdensity <- function(mu_val, sigma_val, func_logdens, my_info)
+{
+  func_logdens(c(mu_val, sigma_val), my_info)
+}
+```
+
+Calculate the log-prior over the grid of points. Use the `purrr` the basic syntax is `purrr::map_dbl(<input>, <call function>)`. To iterate over 2 things, `purrr::map2_dbl()`. For more than 2 things use `purrr::pmap_dbl()`.  
+
+```{r}
+log_prior_result <- purrr::map2_dbl(param_grid$mu,
+                                    param_grid$sigma,
+                                    eval_logdensity,
+                                    func_logdens = my_logprior,
+                                    my_info = hyper_list)
+```
+
+Visualize the log-prior.  
+
+```{r}
+param_grid %>% 
+  mutate(log_dens = log_prior_result) %>% 
+  mutate(log_dens_2 = log_dens - max(log_dens)) %>% 
+  ggplot(mapping = aes(x = mu, y = sigma)) +
+  geom_raster(mapping = aes(fill = log_dens_2)) +
+  stat_contour(mapping = aes(z = log_dens_2),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 2.2,
+               color = "black") +
+  scale_fill_viridis_c(guide = FALSE,
+                       limits = log(c(0.01/100, 1.0))) +
+  labs(x = expression(mu), y = expression(sigma)) +
+  theme_bw()
+```
+
+the log-posterior function.  
+
+```{r}
+my_logpost <- function(theta, my_info)
+{
+  lik_mu <- theta[1]
+  lik_sigma <- theta[2]
+  
+  # calculate the log-likelihood
+  log_lik <- sum(dnorm(x = my_info$xobs,
+                       mean = lik_mu,
+                       sd = lik_sigma,
+                       log = TRUE))
+  
+  log_prior <- dnorm(x = lik_mu,
+        mean = my_info$mu_0,
+        sd = my_info$tau_0,
+        log = TRUE) + 
+    dunif(x = lik_sigma,
+          min = my_info$sigma_lwr,
+          max = my_info$sigma_upr,
+          log = TRUE)
+  
+  # sum together
+  log_lik + log_prior
+}
+```
+
+Visualize the log-posterior.  
+
+```{r}
+info_N05 <- list(
+  xobs = x[1:5],
+  mu_0 = 250,
+  tau_0 = 2,
+  sigma_lwr = 0.5,
+  sigma_upr = 20.5
+)
+
+log_post_result <- purrr::map2_dbl(param_grid$mu,
+                                    param_grid$sigma,
+                                    eval_logdensity,
+                                    func_logdens = my_logpost,
+                                    my_info = info_N05)
+```
+
+```{r}
+param_grid %>% 
+  mutate(log_dens = log_post_result) %>% 
+  mutate(log_dens_2 = log_dens - max(log_dens)) %>% 
+  ggplot(mapping = aes(x = mu, y = sigma)) +
+  geom_raster(mapping = aes(fill = log_dens_2)) +
+  stat_contour(mapping = aes(z = log_dens_2),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 2.2,
+               color = "black") +
+  scale_fill_viridis_c(guide = FALSE,
+                       limits = log(c(0.01/100, 1.0))) +
+  labs(x = expression(mu), y = expression(sigma)) +
+  theme_bw()
+```
+
