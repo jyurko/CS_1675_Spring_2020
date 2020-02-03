@@ -1,0 +1,347 @@
+---
+title: "CS 1675 Recitation: Week 05"
+subtitle: "Laplace Approximation: Programming"
+author: "Dr. Joseph P. Yurko"
+date: "2/3/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load the packages.  
+
+```{r, load_packages}
+library(dplyr)
+library(ggplot2)
+```
+
+Generate the data.  
+
+```{r}
+mu_true <- 254.5
+sigma_true <- 2.5
+
+set.seed(5001)
+x <- rnorm(n = 50, mean = mu_true, sd = sigma_true)
+```
+
+Create a function for the log-prior.  
+
+```{r}
+my_logprior <- function(theta, my_info)
+{
+  lik_mu <- theta[1]
+  lik_sigma <- theta[2]
+  
+  dnorm(x = lik_mu,
+        mean = my_info$mu_0,
+        sd = my_info$tau_0,
+        log = TRUE) + 
+    dunif(x = lik_sigma,
+          min = my_info$sigma_lwr,
+          max = my_info$sigma_upr,
+          log = TRUE)
+}
+```
+
+Evaluate the log-prior over a grid.  
+
+```{r}
+param_grid <- expand.grid(mu = seq(245, 265, length.out = 201),
+                          sigma = seq(0.5, 20.5, length.out = 201),
+                          KEEP.OUT.ATTRS = FALSE,
+                          stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tbl_df()
+```
+
+Define the list of hyperparameters.  
+
+```{r}
+hyper_list <- list(
+  mu_0 = 250,
+  tau_0 = 2,
+  sigma_lwr = 0.5,
+  sigma_upr = 20.5
+)
+
+hyper_list
+```
+
+Create a wrapper function to evaluate the log-prior.  
+
+```{r}
+eval_logdensity <- function(mu_val, sigma_val, func_logdens, my_info)
+{
+  func_logdens(c(mu_val, sigma_val), my_info)
+}
+```
+
+Calculate the log-prior over the grid of points. Use the `purrr` the basic syntax is `purrr::map_dbl(<input>, <call function>)`. To iterate over 2 things, `purrr::map2_dbl()`. For more than 2 things use `purrr::pmap_dbl()`.  
+
+```{r}
+log_prior_result <- purrr::map2_dbl(param_grid$mu,
+                                    param_grid$sigma,
+                                    eval_logdensity,
+                                    func_logdens = my_logprior,
+                                    my_info = hyper_list)
+```
+
+Visualize the log-prior.  
+
+```{r}
+param_grid %>% 
+  mutate(log_dens = log_prior_result) %>% 
+  mutate(log_dens_2 = log_dens - max(log_dens)) %>% 
+  ggplot(mapping = aes(x = mu, y = sigma)) +
+  geom_raster(mapping = aes(fill = log_dens_2)) +
+  stat_contour(mapping = aes(z = log_dens_2),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 2.2,
+               color = "black") +
+  scale_fill_viridis_c(guide = FALSE,
+                       limits = log(c(0.01/100, 1.0))) +
+  labs(x = expression(mu), y = expression(sigma)) +
+  theme_bw()
+```
+
+the log-posterior function.  
+
+```{r}
+my_logpost <- function(theta, my_info)
+{
+  lik_mu <- theta[1]
+  lik_sigma <- theta[2]
+  
+  # calculate the log-likelihood
+  log_lik <- sum(dnorm(x = my_info$xobs,
+                       mean = lik_mu,
+                       sd = lik_sigma,
+                       log = TRUE))
+  
+  log_prior <- dnorm(x = lik_mu,
+        mean = my_info$mu_0,
+        sd = my_info$tau_0,
+        log = TRUE) + 
+    dunif(x = lik_sigma,
+          min = my_info$sigma_lwr,
+          max = my_info$sigma_upr,
+          log = TRUE)
+  
+  # sum together
+  log_lik + log_prior
+}
+```
+
+Visualize the log-posterior.  
+
+```{r}
+info_N05 <- list(
+  xobs = x[1:5],
+  mu_0 = 250,
+  tau_0 = 2,
+  sigma_lwr = 0.5,
+  sigma_upr = 20.5
+)
+
+log_post_result <- purrr::map2_dbl(param_grid$mu,
+                                    param_grid$sigma,
+                                    eval_logdensity,
+                                    func_logdens = my_logpost,
+                                    my_info = info_N05)
+```
+
+```{r}
+param_grid %>% 
+  mutate(log_dens = log_post_result) %>% 
+  mutate(log_dens_2 = log_dens - max(log_dens)) %>% 
+  ggplot(mapping = aes(x = mu, y = sigma)) +
+  geom_raster(mapping = aes(fill = log_dens_2)) +
+  stat_contour(mapping = aes(z = log_dens_2),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 2.2,
+               color = "black") +
+  scale_fill_viridis_c(guide = FALSE,
+                       limits = log(c(0.01/100, 1.0))) +
+  labs(x = expression(mu), y = expression(sigma)) +
+  theme_bw()
+```
+
+Use the `optim()` function to perform the optimization.  
+
+```{r}
+map_result <- optim(c(250, 10),
+                    my_logpost,
+                    gr = NULL,
+                    info_N05,
+                    method = "BFGS",
+                    hessian = TRUE,
+                    control = list(fnscale = -1, maxit = 1001))
+
+map_result
+```
+
+Try from another starting guess.  
+
+```{r}
+map_result_2 <- optim(c(260, 2),
+                    my_logpost,
+                    gr = NULL,
+                    info_N05,
+                    method = "BFGS",
+                    hessian = TRUE,
+                    control = list(fnscale = -1, maxit = 1001))
+
+map_result_2
+```
+
+Instead of finding the posterior mode on $\mu$ and $\sigma$, find the posterior mode on $\mu$ and the unbounded $\varphi$.  
+
+Define a new log-posterior function on the transformed parameters.  
+
+```{r}
+my_logpost_cv <- function(phi, my_info)
+{
+  lik_mu <- phi[1]
+  lik_varphi <- phi[2]
+  
+  # back transform from phi to sigma
+  lik_sigma <- my_info$sigma_lwr + (my_info$sigma_upr - my_info$sigma_lwr) * boot::inv.logit(lik_varphi)
+  
+  # calculate the log-likelihood
+  log_lik <- sum(dnorm(x = my_info$xobs,
+                       mean = lik_mu,
+                       sd = lik_sigma,
+                       log = TRUE))
+  
+  # calculate the log-prior on mu
+  log_prior_mu <- dnorm(x = lik_mu,
+                        mean = my_info$mu_0,
+                        sd = my_info$tau_0,
+                        log = TRUE) 
+  
+  # calculate the log-prior on sigma
+  log_prior_sigma <- dunif(x = lik_sigma,
+                           min = my_info$sigma_lwr,
+                           max = my_info$sigma_upr,
+                           log = TRUE)
+  
+  # account for the log-derivative adjustment
+  log_deriv_adjust <- log(my_info$sigma_upr - my_info$sigma_lwr) +
+    log(boot::inv.logit(lik_varphi)) +
+    log(1 - boot::inv.logit(lik_varphi))
+  
+  # sum the terms together
+  log_lik + log_prior_mu + log_prior_sigma + log_deriv_adjust
+}
+```
+
+Run the optimization on the transformed parameters.  
+
+```{r}
+map_res_cv <- optim(c(260, -2),
+                    my_logpost_cv,
+                    gr = NULL,
+                    info_N05,
+                    method = "BFGS",
+                    hessian = TRUE,
+                    control = list(fnscale = -1, maxit = 1001))
+
+map_res_cv
+```
+
+Try another initial guess.  
+
+```{r}
+map_res_cv_2 <- optim(c(248, 2),
+                    my_logpost_cv,
+                    gr = NULL,
+                    info_N05,
+                    method = "BFGS",
+                    hessian = TRUE,
+                    control = list(fnscale = -1, maxit = 1001))
+
+map_res_cv_2
+```
+
+Set up the the laplace approximation function.  
+
+```{r}
+my_laplace <- function(start_guess, logpost_func, ...)
+{
+  # code adapted from the `LearnBayes`` function `laplace()`
+  fit <- optim(start_guess,
+               logpost_func,
+               gr = NULL,
+               ...,
+               method = "BFGS",
+               hessian = TRUE,
+               control = list(fnscale = -1, maxit = 1001))
+  
+  mode <- fit$par
+  h <- -solve(fit$hessian)
+  p <- length(mode)
+  int <- p/2 * log(2 * pi) + 0.5 * log(det(h)) + logpost_func(mode, ...)
+  list(mode = mode,
+       var_matrix = h,
+       log_evidence = int,
+       converge = ifelse(fit$convergence == 0,
+                         "YES", 
+                         "NO"),
+       iter_counts = fit$counts[1])
+}
+```
+
+Perform the laplace approximation.  
+
+```{r}
+laplace_result <- my_laplace(c(260, -2), my_logpost_cv, info_N05)
+
+laplace_result
+```
+
+Use random sampling to back transform to $\sigma$.  
+
+```{r}
+generate_post_samples <- function(mvn_result, N, my_info)
+{
+  MASS::mvrnorm(n = N,
+                mu = mvn_result$mode,
+                Sigma = mvn_result$var_matrix) %>% 
+    as.data.frame() %>% tbl_df() %>% 
+    purrr::set_names(c("mu", "varphi")) %>% 
+    mutate(sigma = my_info$sigma_lwr + (my_info$sigma_upr - my_info$sigma_lwr) * boot::inv.logit(varphi))
+}
+```
+
+Generate the random posterior samples.  
+
+```{r}
+set.seed(712712)
+my_post_samples <- generate_post_samples(laplace_result, N = 1e4, info_N05)
+
+my_post_samples
+```
+
+```{r}
+my_post_samples %>% 
+  ggplot(mapping = aes(x = mu)) +
+  geom_histogram(bins = 55) +
+  theme_bw()
+```
+
+```{r}
+my_post_samples %>% 
+  ggplot(mapping = aes(x = varphi)) +
+  geom_histogram(bins = 55) +
+  theme_bw()
+```
+
+```{r}
+my_post_samples %>% 
+  ggplot(mapping = aes(x = sigma)) +
+  geom_histogram(bins = 55) +
+  theme_bw()
+```
+
