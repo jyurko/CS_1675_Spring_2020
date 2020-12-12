@@ -1,0 +1,367 @@
+---
+title: "CS 1675: Spring 2020 - Logistic regression"
+subtitle: "Interactions and quadratic terms"
+author: "Dr. Joseph P. Yurko"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+This is an interactive Rmarkdown report. Several code chunks provide interactive user control through R Shiny. This report focuses on visualizing the event probability as a surface between two inputs, $x_1$ and $x_2$. With interactive feedback, the user can alter several of the coefficients within the logistic regression model and see the effect in real time.  
+
+This report will use multiple libraries from the `tidyverse`. We will import `ggplot2` and `dplyr` directly.  
+
+```{r, load_packages}
+library(dplyr)
+library(ggplot2)
+```
+
+
+## Linear with interaction
+
+We will consider the behavior of the event probability, $\mu$, with respect to two inputs, $x_1$ and $x_2$. We will first consider the case where the linear predictor, $\eta$, is linearly related to the two inputs and includes an interaction term. The linear predictor formulation is consisent with the notation from lecture and is displayed in the equation block below.  
+
+$$ 
+\eta_n = \beta_0 + \beta_1 x_{n,1} + \beta_2 x_{n,2} + \beta_3 x_{n,1} x_{n,2}
+$$
+
+The event probability is calculated with the logistic inverse link function:  
+
+$$ 
+\mu_n = \mathrm{logit}^{-1} \left(\eta_n\right) = \frac{\exp\left(\eta_n\right)}{1 + \exp\left(\eta_n\right)}
+$$
+
+Let's create a full-factorial grid beween the two inputs, $x_1$ and $x_2$. Each input will be assumed to be between -3.5 and +3.5. In terms of standardized units, this grid allows visualizing results from -3.5 standard deviations to +3.5 standard deviations, around the input mean. The grid is created in the code chunk below with the `expand.grid()` function.  
+
+```{r, make_input_grid}
+xgrid <- expand.grid(x1 = seq(-3.5, 3.5, length.out = 125),
+                     x2 = seq(-3.5, 3.5, length.out = 125),
+                     KEEP.OUT.ATTRS = FALSE,
+                     stringsAsFactors = FALSE)
+```
+
+Let's now define a function which calculates the linear predictor and event probability based on user specified coefficients. The function `logistic_with_interaction()` has 3 input arguments. The first is `b3`, which is a specified value of the interaction parameter $\beta_3$. The second argument, `x_df`, is a tibble or data.frame of input values. The third argument, `blin`, is a vector of linear predictor coefficients for the intercept, $\beta_0$, and the slopes on each input, $\beta_1$ and $\beta_2$. The setup is not the most efficient, but you should check that you understand the major linear algebra steps in the function below. The function returns a tibble which includes the coefficients to help with visualizations later on.  
+
+```{r, define_interaction_func}
+logistic_with_interaction <- function(b3, x_df, blin)
+{
+  # include the interaction parameter with the other parameters
+  bcol <- as.matrix(c(blin, b3))
+  
+  # create the design matrix
+  Xmat <- model.matrix( ~ x1 * x2, data = x_df)
+  
+  # calculate linear predictor, probability of event, and package together
+  
+  x_df %>% 
+    mutate(eta = as.vector(Xmat %*% bcol),
+           mu = boot::inv.logit(eta)) %>% 
+    mutate(beta_0 = blin[1],
+           beta_1 = blin[2],
+           beta_2 = blin[3],
+           beta_3 = b3)
+}
+```
+
+Let's recreate one of the figures displayed in lecture in Week 09. The code chunk below defines the $\beta_0$, $\beta_1$, and $\beta_2$ coefficients. It also specifies 9 different values for $\beta_3$ to try out between -2.5 and +2.5. This  `logistic_with_interaction()` function was structured to receive a particular set of $\beta_0$, $\beta_1$, and $\beta_2$ coefficients and append a specified $\beta_3$ value. This formulation is therefore intended to compare the behavior of different $\beta_3$ values, for a fixed set of $\beta_0$, $\beta_1$, and $\beta_2$ coefficients.  
+
+```{r, set_params_a}
+b_lin_use <- c(0.25, -1.25, 0.85)
+
+b3_try <- seq(-2.5, 2.5, length.out = 9)
+```
+
+We can now calculate the event probability associated with each of the 9 candidate interaction parameter values. Rather than looping through with a for-loop, the `purrr::map_dfr()` function will handle the iteration and book keeping for us.  
+
+```{r, calc_interaction_surface_a}
+surface_res_a <- purrr::map_dfr(b3_try,
+                                logistic_with_interaction,
+                                x_df = xgrid,
+                                blin = b_lin_use)
+```
+
+Let's now visualize the event probability as a surface with respect to the two inputs. We will create a separate surface for each unique value of the interaction term with `facet_wrap()`. The event probability is represented by the `fill` aesthetic within the `geom_raster()` geometric object. The probability has been binned into 0.25 intervals via the `cut()` function. For reference, the 50% probability trend is represented by a white contuor curve via the `stat_contour()` function with `breaks = 0.5`.  
+
+```{r, viz_surface_res_a}
+surface_res_a %>% 
+  ggplot(mapping = aes(x = x1, y = x2)) +
+  geom_raster(mapping = aes(fill = cut(mu,
+                                       breaks = c(0, 0.25, 0.5, 0.75, 1.0),
+                                       include.lowest = TRUE))) +
+  stat_contour(mapping = aes(z = mu),
+               breaks = 0.5,
+               size = 1.25,
+               color = "white") +
+  coord_fixed(ratio = 1) +
+  facet_wrap(~beta_3, labeller = "label_both") +
+  scale_fill_viridis_d(expression(mu)) +
+  theme_bw()
+```
+
+Before studying the behavior of the surface as we change the coefficients, let's first make a decision by comparing the probability to a threshold value. The figure below is created also with the `geom_raster()` function, but this time the `fill` aesthetic is set to `mu > 0.5`. We are therefore starting out with an assumed threshold value of 50%. With a threshold of 50%, the 50% probability contour corresponds to the decision boundary between the event and non-event.  
+
+```{r, viz_surface_res_a_class}
+surface_res_a %>% 
+  ggplot(mapping = aes(x = x1, y = x2)) +
+  geom_raster(mapping = aes(fill = mu > 0.5)) +
+  stat_contour(mapping = aes(z = mu),
+               breaks = 0.5,
+               size = 1.25,
+               color = "white") +
+  coord_fixed(ratio = 1) +
+  facet_wrap(~beta_3, labeller = "label_both") +
+  scale_fill_brewer(expression(mu*" > threshold"), palette = "Set1") +
+  theme_bw()
+```
+
+A natural question is what would happen to the decision boundary as the threshold changes. Rather than creating several static figures, you can alter the threshold value interactively with a slider bar below.  
+
+```{r, feedback_threshold_decision_surface_slider, echo=FALSE}
+sliderInput("user_threshold_a", "Threshold value:", min = 0.1, max = 0.9, value = 0.5, step = 0.05)
+```
+
+```{r, feedback_threshold_decision_surface_viz, echo=FALSE}
+renderPlot({
+  gga <- surface_res_a %>% 
+  ggplot(mapping = aes(x = x1, y = x2)) +
+  geom_raster(mapping = aes(fill = mu > input$user_threshold_a)) +
+  stat_contour(mapping = aes(z = mu),
+               breaks = input$user_threshold_a,
+               size = 1.25,
+               color = "white") +
+  coord_fixed(ratio = 1) +
+  facet_wrap(~beta_3, labeller = "label_both") +
+  scale_fill_brewer(expression(mu*" > threshold"), palette = "Set1") +
+  theme_bw()
+  
+  print(gga)
+})
+```
+
+The 9 surfaces allow us to get a sense for the impact of the interaction parameter, $\beta_3$, on the event probability. However, how do the surfaces change if we would use different values for the $\beta_1$ or $\beta_2$? The 9 surfaces previously visualized all used $\beta_0 = 0.25$, $\beta_1 = -1.25$, and $\beta_2 = 0.85$. Let's first see what happens if we change $\beta_1$ while keeping all other parameters the same. Changing $\beta_1$ requires the event probability surfaces to be recalculated.  
+
+Study the behavior interactively by changing `beta_1` with the slider bar below. The probability is again binned into 0.25 intervals and the 50% probability contour is displayed by the white line.  
+
+```{r, feedback_interaction_surface_change_b1_slider, echo=FALSE}
+sliderInput("user_b1_a", "beta_1:", min = -2, max = 2, value = -1.25, step = 0.05)
+```
+
+```{r, feedback_interaction_surface_change_b1_viz, echo=FALSE}
+renderPlot({
+  b_try_new <- c(b_lin_use[1], input$user_b1_a, b_lin_use[3])
+  
+  ggb <- purrr::map_dfr(b3_try,logistic_with_interaction,
+                 x_df = xgrid,
+                 blin = b_try_new) %>% 
+    ggplot(mapping = aes(x = x1, y = x2)) +
+    geom_raster(mapping = aes(fill = cut(mu,
+                                         breaks = c(0, 0.25, 0.5, 0.75, 1.0),
+                                         include.lowest = TRUE))) +
+    stat_contour(mapping = aes(z = mu),
+                 breaks = 0.5,
+                 size = 1.05,
+                 color = "white") +
+    coord_fixed(ratio = 1) +
+    facet_wrap(~beta_3, labeller = "label_both") +
+    scale_fill_viridis_d(expression(mu)) +
+    theme_bw()
+  
+  print(ggb)
+})
+```
+
+
+What if we varied both $\beta_1$ and $\beta_2$? And how does the behavior change if the intercept is changed? The code chunk below defines a new function, `logistic_with_interaction_b()` which allows the user to supply the interaction term and the intercept term. The structure of the function is similar to `logistic_with_interaction()`. Again, this formulation is not the most efficient. It was selected to use some of the important functions you have used in the homework assignments for creating models. Can you interpret the important lines of code in the code chunk below?  
+
+```{r, define_func_to_vary_intercept}
+logistic_with_interaction_b <- function(b3, b0, x_df, bslopes)
+{
+  # include the interaction parameter with the other parameters
+  bcol <- as.matrix(c(b0, bslopes, b3))
+  
+  # create the design matrix
+  Xmat <- model.matrix( ~ x1 * x2, data = x_df)
+  
+  # calculate linear predictor, probability of event, and package together
+  
+  x_df %>% 
+    mutate(eta = as.vector(Xmat %*% bcol),
+           mu = boot::inv.logit(eta)) %>% 
+    mutate(beta_0 = b0,
+           beta_1 = bslopes[1],
+           beta_2 = bslopes[2],
+           beta_3 = b3)
+}
+```
+
+Let's try out a grid of interaction and intercept terms. We will continue to use the same set of 9 $\beta_3$ values. Three values of the intercept, $\beta_0$, will be considered, -1, 0, and +1. This way we can see the change from negative to positive intercepts. The `expand.grid()` function is used to create the full-factorial grid of $\beta_3$ and $\beta_0$ values in the code chunk below. Since we are using 3 sets of 9 surfaces, let's reduce the size of the input grid by defining a new variable `xgrid_b` as well. The `purrr::map2_dfr()` function is then used to iterate over each of the parameter values and calculate the probability surfaces and store the results in `surface_res_b`, using the original $\beta_1$ and $\beta_2$ values.  
+
+```{r, calc_new_surface_vary_b0}
+b30_grid <- expand.grid(b3 = b3_try, b0 = c(-1, 0, 1),
+                        KEEP.OUT.ATTRS = FALSE,
+                        stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tbl_df()
+
+xgrid_b <- expand.grid(x1 = seq(-3.5, 3.5, length.out = 95),
+                       x2 = seq(-3.5, 3.5, length.out = 95),
+                       KEEP.OUT.ATTRS = FALSE,
+                       stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tbl_df()
+
+surface_res_b <- purrr::map2_dfr(b30_grid$b3,
+                                 b30_grid$b0,
+                                 logistic_with_interaction_b,
+                                 x_df = xgrid_b,
+                                 bslopes = b_lin_use[2:3])
+```
+
+All of the probability surfaces are visualized in the figure below.  
+
+```{r, viz_surface_default_b1b2}
+surface_res_b %>% 
+  mutate(beta_0 = forcats::fct_rev(as.factor(beta_0))) %>% 
+  ggplot(mapping = aes(x = x1, y = x2)) +
+  geom_raster(mapping = aes(fill = cut(mu,
+                                       breaks = c(0, 0.25, 0.5, 0.75, 1.0),
+                                       include.lowest = TRUE))) +
+  stat_contour(mapping = aes(z = mu),
+               breaks = 0.5,
+               size = 1.05,
+               color = "white") +
+  coord_fixed(ratio = 1) +
+  facet_grid(beta_0 ~ beta_3, labeller = "label_both") +
+  scale_fill_viridis_d(expression(mu)) +
+  theme_bw() +
+  theme(legend.position = "top",
+        legend.title = element_text(hjust = 1))
+```
+
+Let's now see what happens as the $\beta_1$ and $\beta_2$ change together. Use the slider bars to see how these two coefficients impact the probability surface with respect to the two inputs. Can you interpret the behavior of the event probability when the interaction parameter equals 0?  
+
+```{r, feedback_interaction_b1b2_sliders, echo=FALSE}
+sliderInput("user_b1_b", "beta_1:", min = -2, max = 2, value = -1.25, step = 0.05)
+sliderInput("user_b2_b", "beta_2:", min = -2, max = 2, value = 0.85, step = 0.05)
+```
+
+```{r, feedback_interaction_b1b2_surf_viz, echo=FALSE}
+renderPlot({
+  
+  ggc <- purrr::map2_dfr(b30_grid$b3,
+                         b30_grid$b0,
+                         logistic_with_interaction_b,
+                         x_df = xgrid_b,
+                         bslopes = c(input$user_b1_b, input$user_b2_b)) %>% 
+     mutate(beta_0 = forcats::fct_rev(as.factor(beta_0))) %>% 
+    ggplot(mapping = aes(x = x1, y = x2)) +
+    geom_raster(mapping = aes(fill = cut(mu,
+                                         breaks = c(0, 0.25, 0.5, 0.75, 1.0),
+                                         include.lowest = TRUE))) +
+    stat_contour(mapping = aes(z = mu),
+                 breaks = 0.5,
+                 size = 1.05,
+                 color = "white") +
+    coord_fixed(ratio = 1) +
+    facet_grid(beta_0 ~ beta_3, labeller = "label_both") +
+    scale_fill_viridis_d(expression(mu)) +
+    theme_bw() +
+    theme(legend.position = "top",
+          legend.title = element_text(hjust = 1))
+  
+  print(ggc)
+})
+```
+
+## Quadratic
+
+We will now visualize the trends of the event probability, $\mu$, with respect to the inputs when the model includes quadratic terms. The linear predictor formulation is written in the equation block below. The $\beta_4$ and $\beta_5$ coefficients are the slopes acting on the quadratic terms for $x_1$ and $x_2$, respectively.  
+
+$$ 
+\eta_n = \beta_0 + \beta_1 x_{n,1} + \beta_2 x_{n,2} + \beta_3 x_{n,1} x_{n,2} + \beta_4 x_{n,1}^{2} + \beta_5 x_{n,2}^{2}
+$$
+
+Let's recreate a figure shown in lecture where we visualize the event probability surface for different combinations of the $\beta_4$ and $\beta_5$ coefficients. In lecture, the $\beta_0$, $\beta_1$, $\beta_2$ were fixed at their original values of 0.25, -1.25, and 0.85, respectively. We examined trends at a few different values of the interaction parameter $\beta_3$. Let's start out with the case that $\beta_3$ equals 0. Rather than creating a function and then iterating over that function with `purrr`, we simple create a full-factorial grid between the inputs and the parameters. This grid style approach is straight forward to implement, but is not well suited if the number of parameters is large.  
+
+We need to first create the grid between the inputs and the quadratic coefficients. We will include the coefficients that are not varied within the `expand.grid()` function call, to make book keeping easier. As with lecture, we will examine 3 unique values of $\beta_4$ and 3 unique values $\beta_5$. For simplicity, set each parameter to be -1, 0, and 1. A glimpse of the resulting tibble is displayed to present its structure.  
+
+```{r, make_quad_grid_a}
+quad_grid_a <- expand.grid(x1 = seq(-3.5, 3.5, length.out = 95),
+                           x2 = seq(-3.5, 3.5, length.out = 95),
+                           beta_0 = b_lin_use[1],
+                           beta_1 = b_lin_use[2],
+                           beta_2 = b_lin_use[3],
+                           beta_3 = 0,
+                           beta_4 = c(-1, 0, 1),
+                           beta_5 = c(-1, 0, 1),
+                           KEEP.OUT.ATTRS = FALSE,
+                           stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tbl_df()
+
+quad_grid_a %>% glimpse()
+```
+
+We can calculate the linear predictor, $\eta$, by piping `quad_grid_a` into `mutate()` and typing in the quadratic relationship. The event probability, $\mu$, is then calculated by calling the `boot::inv.logit()` function. Rather than saving the result, the mutated tibble is piped into `ggplot()` to create the static figure.  
+
+```{r, viz_quad_grid_a_surface}
+quad_grid_a %>% 
+  mutate(eta = beta_0 + beta_1 * x1 + beta_2 * x2 + beta_3 * x1 * x2 + beta_4 * (x1^2) + beta_5 * (x2^2),
+         mu = boot::inv.logit(eta)) %>% 
+  mutate(beta_5 = forcats::fct_rev(as.factor(beta_5))) %>% 
+  ggplot(mapping = aes(x = x1, y = x2)) +
+  geom_raster(mapping = aes(fill = cut(mu,
+                                       breaks = c(0, 0.25, 0.5, 0.75, 1.0),
+                                       include.lowest = TRUE))) +
+  stat_contour(mapping = aes(z = mu),
+               breaks = 0.5,
+               size = 1.05,
+               color = "white") +
+  coord_fixed(ratio = 1) +
+  facet_grid(beta_5 ~ beta_4, labeller = "label_both") +
+  scale_fill_viridis_d(expression(mu)) +
+  theme_bw()
+```
+
+Let's now interactively change the $\beta_3$ parameter to see how the event probability surfaces change. Use the slider bar to change the value of $\beta_3$ and watch the impact on the event probability surface. Note that this visualizations keeps $\beta_0$, $\beta_1$ and $\beta_2$ fixed.  
+
+```{r, quad_viz_b3_change_slider, echo=FALSE}
+sliderInput("user_b3_c", "beta_3:", min = -2, max = 2, value = 0, step = 0.05)
+```
+
+
+```{r, quad_viz_b3_change_viz, echo=FALSE}
+renderPlot({
+  ggd <- expand.grid(x1 = seq(-3.5, 3.5, length.out = 95),
+              x2 = seq(-3.5, 3.5, length.out = 95),
+              beta_0 = b_lin_use[1],
+              beta_1 = b_lin_use[2],
+              beta_2 = b_lin_use[3],
+              beta_3 = input$user_b3_c,
+              beta_4 = c(-1, 0, 1),
+              beta_5 = c(-1, 0, 1),
+              KEEP.OUT.ATTRS = FALSE,
+              stringsAsFactors = FALSE) %>% 
+    as.data.frame() %>% tbl_df() %>% 
+    mutate(eta = beta_0 + beta_1 * x1 + beta_2 * x2 + beta_3 * x1 * x2 + beta_4 * (x1^2) + beta_5 * (x2^2),
+           mu = boot::inv.logit(eta)) %>% 
+    mutate(beta_5 = forcats::fct_rev(as.factor(beta_5))) %>% 
+    ggplot(mapping = aes(x = x1, y = x2)) +
+    geom_raster(mapping = aes(fill = cut(mu,
+                                         breaks = c(0, 0.25, 0.5, 0.75, 1.0),
+                                         include.lowest = TRUE))) +
+    stat_contour(mapping = aes(z = mu),
+                 breaks = 0.5,
+                 size = 1.05,
+                 color = "white") +
+    coord_fixed(ratio = 1) +
+    facet_grid(beta_5 ~ beta_4, labeller = "label_both") +
+    scale_fill_viridis_d(expression(mu)) +
+    theme_bw()
+  
+  print(ggd)
+})
+```
+

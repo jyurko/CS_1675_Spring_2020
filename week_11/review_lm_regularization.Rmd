@@ -1,0 +1,1584 @@
+---
+title: "CS 1675: Spring 2020"
+subtitle: "Linear model and regularization review"
+author: "Dr. Joseph P. Yurko"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+The last few weeks have a had a lot of math as we have moved through linear and generalized linear models. It can be easy to get forget the basic concepts that serve as the foundation to the more complex modeling tasks. Before spring break, we discussed regularization in detail, and introduced how Ridge, Lasso, and Elastic Net try to penalize large coefficient values as a way to guard against overfitting. However, we have actually been working with regularization from the very start because we have presented modeling from a Bayesian point of view. This markdown presents a simple Bayesian linear regression example, but focuses on how the compromise between the prior and likelihood acts to regularize the coefficients. It reviews the key mathematical concepts and links them to the functions you have used in your homework assignments. Additionally, this markdown shows more details about `R` programming that have been used in the previous homework assignments.  
+
+To run the code in the markdown, you will need to have the `tidyverse` downloaded and installed. You will also need to download and install the `mvtnorm` and `ggthemes` packages. You can use the RStudio Install Packages GUI to install the package before running the code in this markdown. As I usually do, the `dplyr` and `ggplot2` packages are loaded in the first code chunk below. All other `tidyverse` functions will be accessed directly through the `::` operator, when necessary.  
+
+```{r, load_packages, warning=FALSE, message=FALSE}
+library(dplyr)
+library(ggplot2)
+```
+
+## Synthetic data
+
+We will work with synthetic data in this markdown. We need to specify a *true* model functional form and then generate data from that model. We will use a simple single input with a linear relationship with the *true* mean trend. The true functional form with true coefficient values is written in the equation block below. The *true* intercept is -0.25 and the *true* slope is 1.5.  
+
+$$ 
+\mu_n = -0.25 + 1.5 \times x_n
+$$
+
+We will generate noisy responses, $y$, using this assumed *true* mean trend through a Gaussian likelihood. The conditional distribution of $y$ given the mean $\mu$ and a noise term $\sigma = 1.2$ is:  
+
+$$ 
+y_n \mid \mu_n, \sigma=1.2 \sim \mathrm{normal}\left( y_n \mid \mu_n, 1.2 \right)
+$$
+
+Let's now generate the values. The input $x$ will be generated from a standard normal distribution. It is important to note that we do not have to generate $x$ randomly. For this synthetic data problem, we could set $x$ to be evenly spaced between some desired bounds. I typically generate random input values to represent collecting data in a real application.  
+
+```{r, generate_random_inputs}
+set.seed(4100)
+x_demo <- rnorm(n = 100, mean = 0, sd = 1)
+```
+
+Define the *true* intercept and slope as the *true* $\beta_0$ and $\beta_1$ parameters. Also, specify the *true* noise term as the true $\sigma$ parameter.  
+
+```{r, set_true_param_values}
+beta_0_true <- -0.25
+beta_1_true <- 1.5
+
+sigma_true <- 1.2
+```
+
+Calculate the true mean trend at each input value and then generate random responses using the `rnorm()` function. The rest of the code in the code chunk below packages everything into a `tibble` named `demo_df`.  
+
+```{r, generate_all_data}
+set.seed(4200)
+demo_df <- tibble::tibble(
+  x = x_demo
+) %>% 
+  mutate(mu = beta_0_true + beta_1_true * x,
+         y = rnorm(n = n(), mean = mu, sd = sigma_true))
+```
+
+Let's take a look at the randomly generated input values through a run-style chart. The x-axis in a run chart is the observation index, which is added to the `demo_df` object via the `tibble::rowid_to_column()` function. For reference, the first 10 observations are colored orange.  
+
+```{r, viz_input_run_chart}
+demo_df %>% 
+  tibble::rowid_to_column() %>% 
+  ggplot(mapping = aes(x = rowid, y = x)) +
+  geom_hline(yintercept = 0, color = "grey30", size = 1.15) +
+  geom_hline(yintercept = c(-1, 1), color = "grey", size = 1.15) +
+  geom_hline(yintercept = c(-2, 2), color = "grey", size = 1.15, linetype = "dashed") +
+  geom_line(size = 1.15) +
+  geom_point(mapping = aes(color = rowid < 11),
+             size = 3.5) +
+  scale_color_manual("First 10 observations?", 
+                     values = c("TRUE" = "darkorange",
+                                "FALSE" = "black")) +
+  theme_bw() +
+  theme(legend.position = "top")
+```
+
+We can easily visualize the responses with respect to the input with a scatter plot. For reference, the first 10 observations are denoted as large orange markers.  
+
+```{r, viz_xy_scatter}
+demo_df %>% 
+  tibble::rowid_to_column() %>% 
+  ggplot(mapping = aes(x = x, y = y)) +
+  geom_point(mapping = aes(color = rowid < 11,
+                           size = rowid < 11)) +
+  scale_color_manual("First 10 observations?",
+                     values = c("TRUE" = "darkorange",
+                                "FALSE" = "black")) +
+  scale_size_manual("First 10 observations?",
+                    values = c("TRUE" = 7,
+                               "FALSE" = 1.15)) +
+  labs(x = "x", y = "y") +
+  theme_bw() +
+  theme(axis.title = element_text(size = 11),
+        legend.position = "top")
+```
+
+However, since this is a synthetic data problem, we know the true mean function and the true noise around the mean trend. To visualize the true trend, the code chunk below creates a "fine" grid with 101 evenly spaced input points between -2.5 and +2.5. The true mean trend is then calculated at each input point along that grid, and the results are stored in the `demo_fine` object.  
+
+```{r, make_fine_grid_for_viz}
+demo_fine <- tibble::tibble(
+  x = seq(-2.5, 2.5, length.out = 101)
+) %>% 
+  mutate(mu = beta_0_true + beta_1_true * x)
+```
+
+Let's now visualize the true noise around the true mean trend with ribbons. The $\pm1$, $\pm2$, and $\pm3$ "sigma" intervals are displayed by transparent light blue ribbons below. The true mean trend is shown by the black line. The noisy responses are denoted by markers, with the first 10 again denoted as large orange markers. The observation order is depicted by the white text printed within the first 10 markers. As shown below, only 2 of the markers are outside the middel ribbon, which is consistent with the $\pm2$ "sigma" interval containing about 95% of the uncertainty.
+
+```{r, viz_true_trend_ribbons_scatter}
+demo_fine %>% 
+  tibble::rowid_to_column() %>% 
+  ggplot(mapping = aes(x = x)) +
+  geom_ribbon(mapping = aes(ymin = mu - 3 * sigma_true,
+                            ymax = mu + 3 * sigma_true,
+                            group = 1),
+              fill = "dodgerblue", alpha = 0.25) +
+  geom_ribbon(mapping = aes(ymin = mu - 2 * sigma_true,
+                            ymax = mu + 2 * sigma_true,
+                            group = 1),
+              fill = "dodgerblue", alpha = 0.25) +
+  geom_ribbon(mapping = aes(ymin = mu - 1 * sigma_true,
+                            ymax = mu + 1 * sigma_true,
+                            group = 1),
+              fill = "dodgerblue", alpha = 0.25) +
+  geom_line(mapping = aes(y = mu,
+                          group = 1),
+            color = "black", size = 1.15) +
+  geom_point(data = demo_df %>% 
+               tibble::rowid_to_column("obs_id"),
+             mapping = aes(y = y,
+                           color = obs_id < 11,
+                           size = obs_id < 11)) +
+  geom_text(data = demo_df %>% 
+              tibble::rowid_to_column("obs_id") %>% 
+              filter(obs_id < 11),
+            mapping = aes(y = y,
+                          label = obs_id),
+            color = "white") +
+  scale_color_manual("First 10 observations?",
+                     values = c("TRUE" = "darkorange",
+                                "FALSE" = "black")) +
+  scale_size_manual("First 10 observations?",
+                    values = c("TRUE" = 7,
+                               "FALSE" = 1.15)) +
+  labs(x = "x", y = "y") +
+  theme_bw() +
+  theme(axis.title = element_text(size = 11),
+        legend.position = "top")
+```
+
+## OLS
+
+We can fit a standard linear regression which finds the coefficient (intercept and slope) estimates via Maximum Likelihood Estimation (MLE) or analogously the Ordinary Least Squares (OLS) estimates with the `lm()` function. The interface is simple, we just need to specify a formula and pass in the data set.  
+
+Let's go ahead and extract the first 10 observations and treat that as our training set.  
+
+```{r, make_train_10}
+demo_train <- demo_df %>% 
+  tibble::rowid_to_column("obs_id") %>% 
+  filter(obs_id < 11) %>% 
+  select(x, y)
+```
+
+We can fit the linear model with one line of code, as shown below.  
+
+```{r, fit_mle_10}
+demo_mod <- lm(y ~ x, data = demo_train)
+```
+
+We can look at the results by calling the `summary()` function. As shown below the input `x` is considered to be statistically significant as denoted by the `***` characters next to its summary. Although the input is correctly identified as significant, the coefficient estimate is not exactly correct. We now that the slope should be 1.5, but we see that the estimate slope is about `r signif(coef(demo_mod)[2], 2)`. So although it's close, it's not exactly correct.  
+
+```{r, show_mle_10_summary}
+demo_mod %>% summary()
+```
+
+However, what if we fit the model with just 5 observations? Rather than specifying a separate data set of just the first 5 observations, the code chunk below shows how to fit the linear model and display the results summary in one pipeline. Notice that the `data` argument to the `lm()` call is specified as `.`. Within the pipe-operator context, the `.` tells `R` to pass in the piped object to the `data` argument, rather than the first argument in the `lm()` call.  
+
+```{r, fit_mle_05_summary}
+demo_df %>% 
+  tibble::rowid_to_column("obs_id") %>% 
+  filter(obs_id < 6) %>% 
+  lm(y ~ x, data = .) %>% 
+  summary()
+```
+
+The summary print out above shows that the input `x` is no longer statistically significant at the 5% signifince level. However, the coefficient estimate is actually closer to the true slope of 1.5 than it was when we had more data! The estimate is more correct...but the model "interprets" the results differently. What's going on?  
+
+## Bayesian approach
+
+We know how the OLS estimate is calculated. So we could go through the math to see what causes the behavior. However, let's first try to understand the problem graphically within a Bayesian framework. We have actually gone through this already. We went through the graphical analysis in Week 06 in lecture, but let's revisit it now.  
+
+We will begin by assuming the noise term is known, so that way we can focus on the coefficients, the intercept and the slope. As with any Bayesian analysis we need to specify a prior distribution. We will continue to use independent Gaussians like we have done throughout the semester for the coefficients. We will use a prior mean of 0 for both and a common standard deviation, $\tau_{\beta}$. The prior is written in general terms using a product series below:  
+
+$$ 
+p\left(\boldsymbol{\beta} \mid \mu_{\beta}=0, \tau_{\beta} \right) \sim \prod_{d=0}^{D} \left( \mathrm{normal}\left( \beta_d \mid \mu_{\beta}=0,\tau_{\beta} \right)\right)
+$$
+
+For our specific application, $D=1$, and so we have just two unknown coefficients:  
+
+$$ 
+p\left(\beta_0, \beta_1 \mid \mu_{\beta}=0, \tau_{\beta}\right) = \mathrm{normal}\left( \beta_0 \mid \mu_{\beta}=0, \tau_{\beta} \right) \times \mathrm{normal}\left( \beta_1 \mid \mu_{\beta}=0, \tau_{\beta} \right)
+$$
+
+We typically work with log-densities rather than the density value directly. So let's visualize the log-prior density surface over a wide grid of possible coefficient values. The code chunk below creates a full-factorial grid between the intercept, `beta_0`, and the slope, `beta_1` via the `expand.grid()` function. Each coefficient uses 251 evenly spaced points between -4 and +4.  
+
+```{r, make_beta_grid}
+beta_param_grid <- expand.grid(beta_0 = seq(-4, 4, length.out = 251),
+                               beta_1 = seq(-4, 4, length.out = 251),
+                               KEEP.OUT.ATTRS = FALSE,
+                               stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tbl_df()
+```
+
+We will use the `mvtnorm::dmvnorm()` function rather than defining our own function to calculate the log-prior density. The `mvtnorm::dmvnorm()` function calculates the density of a MultiVariate Normal (MVN) distribution using three main arguments.  The first is `x` a vector or matrix of values we want to calculate the density at. If we are interested in calculating the density over many combinations of the variables the matrix `x` has columns equal to the number of variables and rows equal to the number of evaluations we wish to make. In our present example we will evaluate the MVN density of the intercept and slope for each pair of points in the grid. The second argument, `mean`, is a vector for the mean values and must have length equal to the number of columns of the first argument. The third argument, `sigma`, is the covariance matrix. An optional fourth argument, `log`, is a logical value. If `log = TRUE` then the log-density is returned.  
+
+The code chunk below evaluates the log-prior density using independent standard normals. Can you see how the `mvtnorm::dmvnorm()` function is specified to represent two independent Gaussians standard deviations equal to 1 and means equal to 0?  
+
+```{r, eval_prior_01}
+values_log_prior_01 <- mvtnorm::dmvnorm(as.matrix(beta_param_grid),
+                                        mean = rep(0, 2),
+                                        sigma = diag(2),
+                                        log = TRUE)
+```
+
+The `values_log_prior_01` object is a vector with length equal to the number of runs in `beta_param_grid`. The log-prior density is added to the `beta_param_grid` through a `mutate()` call in the code chunk below. The maximum value is then subtracted out, which makes it easier to define the contours as probability values relative to the maximum log-density. The contours are then plotted as we have used throughout the semester. The true coefficient values are displayed as dashed white lines for reference.  
+
+```{r, viz_log_prior_density_grid}
+beta_param_grid %>% 
+  mutate(log_prior = values_log_prior_01) %>% 
+  mutate(log_prior_2 = log_prior - max(log_prior)) %>% 
+  ggplot(mapping = aes(x = beta_1, y = beta_0)) +
+  geom_raster(mapping = aes(fill = log_prior_2)) +
+  stat_contour(mapping = aes(z = log_prior_2),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 2.2,
+               color = "black") +
+  geom_hline(yintercept = beta_0_true,
+             color = "white", linetype = "dashed", size = 1.2) +
+  geom_vline(xintercept = beta_1_true,
+             color = "white", linetype = "dashed", size = 1.2) +
+  coord_fixed(ratio = 1) +
+  scale_fill_viridis_c(guide = FALSE, option = "viridis",
+                       limits = log(c(0.01/100, 1.0))) +
+  labs(x = expression(beta[1]), y = expression(beta[0])) +
+  theme_bw()
+```
+
+In order to study how our assumed prior relates to the data through the likelihood, we need to define a function which calculates the log-posterior. Before writing that function, let's review model formulation, since that is what our function will encode. The un-normalized log-posterior on the unknown intercept and slope is the sum of the log-likelihood and the log-prior. It is un-normalized because we are neglecting the normalizing constant, the denominator in Bayes' theorem. The un-normalized log-posterior is written for our linear model below with known noise below.  
+
+$$ 
+\log \left[ p\left( \beta_0, \beta_1 \mid \mathbf{x}, \mathbf{y}, \sigma \right) \right] \propto \sum_{n=1}^{N}\left( \log \left[ \mathrm{normal} \left( y_n \mid \mu_n, \sigma \right) \right]\right) + \sum_{d=0}^{D=1}\left(\log\left[ \mathrm{normal}\left( \beta_d \mid 0, \tau_{\beta} \right) \right] \right)
+$$
+
+Remember that the mean trend, $\mu_n$, is a function of the unknown coefficients and the input. For our current toy problem, we are using a simple linear relationship:  
+
+$$ 
+\mu_n = \beta_0 + \beta_1 x_n
+$$
+
+We can rewrite the expression as a summation of $D+1$ inputs when we include the "fake" 0-th input, $x_{n,d=0} = 1$:  
+
+$$ 
+\mu_n = \sum_{d=0}^{D} \left(\beta_d x_{n, d} \right)
+$$
+
+And as we discussed in lecture, the summation can be rewritten as an inner-product:  
+
+$$ 
+\mu_n = \mathbf{x}_{n, :} \boldsymbol{\beta}
+$$
+
+where $\mathbf{x}_{n,:}$ is the $n$-th row of the $N \times \left(D+1\right)$ design matrix $\mathbf{X}$ and the $\left(D+1\right) \times 1$ coefficient column vector $\boldsymbol{\beta} = \left[\beta_0, \beta_1\right]^T$. With this notation we can write the $N\times 1$ vector of mean trend values, $\boldsymbol{\mu}$, as the matrix multiplication between the design matrix and the coefficient column vector:  
+
+$$ 
+\boldsymbol{\mu} = \mathbf{X} \boldsymbol{\beta}
+$$
+
+With the basic mathematical structure in place, let's now define our log-posterior function. In lecture and in your homework assignments, the log-posterior functions have returned a single value. We will alter that behavior in the markdown and have the function return the log-posterior, log-prior, and log-likelihood values. This will allow us to easily compare the three terms. Since we will study three different densities the function defined below is not named `lm_logpost()`, but rather `lm_log_dens()` to reflect this change. The basic structure however is the same as the log-posterior functions you have worked with in your previous assignments. The first input argument, `unknowns`, is the vector of unknown variables to learn, and the second argument, `my_info`, is a list of required information to evaluate the function. Because we are using a fixed noise term for now, all unknown parameters correspond to the coefficients. The known $\sigma$ value is passed in via the `my_info$sigma_use` variable.  
+
+You should be able to read through each line in the `lm_log_dens()` function below. If you are confused, consider how the lines of code relate to the equations written out above. The only new line, relative to your homework assignments, is the last line which packages up the log-likelihood, log-prior, and log-posterior values into a list.  
+
+```{r, define_lm_log_dens_func}
+lm_log_dens <- function(unknowns, my_info)
+{
+  # unknowns are just the beta parameters for this example
+  bcol <- as.matrix(unknowns)
+  
+  # extract the design matrix
+  X <- my_info$design_matrix
+  
+  # calculate the mean trend
+  mu <- as.vector(X %*% bcol)
+  
+  # evaluate the log-likelihood
+  log_lik <- sum(dnorm(x = my_info$yobs,
+                       mean = mu,
+                       sd = my_info$sigma_use,
+                       log = TRUE))
+  
+  # evalutae the log-prior
+  log_prior <- sum(dnorm(x = unknowns,
+                         mean = my_info$mu_beta,
+                         sd = my_info$tau_beta,
+                         log = TRUE))
+  
+  # sum together
+  log_post <- log_lik + log_prior
+  
+  # package together
+  list(log_lik = log_lik, log_prior = log_prior, log_post = log_post)
+}
+```
+
+To evaluate our function, we need to assemble all of the required information. We will start out using the first 10 observations as the training set, and use the independent standard normal priors. The code chunk below uses the `model.matrix()` function to create the design matrix and assigns the result directly to the `$design_matrix` variable in the list.  
+
+```{r, make_info_10_obs}
+demo_info <- list(
+  yobs = demo_train$y,
+  design_matrix = model.matrix( ~ x, demo_train),
+  mu_beta = 0,
+  tau_beta = 1,
+  sigma_use = sigma_true
+)
+```
+
+Test out the `lm_log_dens()` function by passing in a vector of 0's for both coefficients. Notice that the result printed to the screen below is not a single value, but a list of 3 named values.  
+
+```{r, test_out_our_func_0}
+lm_log_dens(rep(0, ncol(demo_info$design_matrix)), demo_info)
+```
+
+If we change the coefficient values, the returned values change. Test out a vector of -2's below.  
+
+```{r, test_out_our_func_n2}
+lm_log_dens(rep(-2, ncol(demo_info$design_matrix)), demo_info)
+```
+
+We will evaluate `lm_log_dens()` for each combination of `beta_0` and `beta_1` contained in the `beta_param_grid` object. We will need to therefore loop over all `r nrow(beta_param_grid)` rows! To help with that operation, the code chunk below defines a "wrapper" function which calls `lm_log_dens()` by packaging together two input arguments `b0` and `b1` into a vector and calling a third argument, `my_func()`. The fourth argument, `my_info`, is the list of information required to evaluate the function passed into the `my_func` argument.  
+
+```{r, make_eval_func}
+eval_log_dens <- function(b0, b1, my_func, my_info)
+{
+  my_func(c(b0, b1), my_info)
+}
+```
+
+Let's show that the `eval_log_dens()` function returns the same result as `lm_log_dens()` directly by passing in 0's for the `b0` and `b1` arguments. As shown by print out below, the result is the same as when we passed in a vector of 0's to the `lm_log_dens()` function.  
+
+```{r, test_out_eval_wrapper}
+eval_log_dens(0, 0, lm_log_dens, demo_info)
+```
+
+### Iterating with `purrr`
+
+It might seem odd to reformulate the function call this way, but I like to use `purrr` package to functionally perform iterations rather than using for-loops. You can skip this portion of the markdown on your first read through, or if you do not wish to learn more about `purrr`. You will not be tested on its functionality, but functional programming concepts are powerful tools that can greatly accelerate any data analysis workflow. Please step through this section if you would like to get a better understanding of how we will use `purrr` to iterate.  
+
+The wrapper function allows to use one of the `purrr::map*` family of apply functions which "apply a function" to each element in an object. Specifically, we will use `purrr::map2_dfr()` to iterate over all combinations of `beta_0` and `beta_1` in the `beta_param_grid` object. The syntax of `purrr::map2_dfr()` is shown below:  
+
+`<result data.frame> <- purrr::map2_dfr(x, y, <function to apply>, <all remaining function inputs>)`  
+
+The first two arguments to `purrr::map2_dfr()` are objects we wish to iterate over. Each element of `x` and `y` will be passed into the `<function to apply>` as the first and second arguments, respectively. `purrr::map2_dfr()` takes the result of the `<function to apply>` and stores it as a data.frame. It then iterates forward, calling the function for the next elements in the `x` and `y` objects, and appends the result to the data.frame.  
+
+We have already evaluated the function for two sets of coefficient values, `c(0, 0)` and `c(-2, -2)`. The code chunk below uses `purrr` to iterate over those two sets of values and prints the result to the screen. You should see the values from before, just now structured as a data.frame (or more precisely as a tibble). Thus, rather than seeing the result shown as a list with the log-likelihood, log-prior, and log-posterior values displayed with `$` operators, the terms are columns in the data.frame and each row corresponds to the unique combinations of the coefficients.  
+
+```{r, demo_using_purr_to_iterate}
+purrr::map2_dfr(c(0, -2),
+                c(0, -2),
+                eval_log_dens,
+                my_func = lm_log_dens,
+                my_info = demo_info)
+```
+
+Notice how the vectors are structured in the first two arguments to the `purrr::map2_dfr()` call. The first vector, `c(0, -2)` are the two values of `b0` to pass into the `eval_log_dens()` function. The second vector, `c(0, -2)`, are the two values of `b1` to pass into `eval_log_dens()`. The first row in the resulting data.frame therefore corresponds to the log-likelihood, log-prior, and log-posterior values associated with `b0 = 0` and `b1 = 0`. The second row corresponds to the values associated with `b0 = -2` and `b1 = -2`.  
+
+As one last example, let's call `eval_log_dens()` with `b0 = 0` and `b1 = 1`. With this setup, `b0` is the same as the case of setting both coefficients to 0's. The difference is that `b1` is not 0, and so we are getting the effect of changing the slope. The `eval_log_dens()` call is printed to the screen below, and note that the values are all quite different what we saw previously.  
+
+```{r, run_wrapper_example_a}
+eval_log_dens(0, 1, lm_log_dens, demo_info)
+```
+
+To run all three coefficient combinations with `purrr`, we include one additional element to the first two arguments to the `purrr::map2_dfr()` call. Since `b0` is the first input argument to `eval_log_dens()` we include an additional 0 to the first vector. The second argument to `eval_log_dens()` is `b1` and thus the second vector to `purrr::map2_dfr()` has the third element set equal to 1. All other portions of the `purrr::map2_dfr()` call are the same as before. Notice that the output printed to the screen is still a data.frame. The first two rows are the same as before. The new third row consists of the values associated with `b0 = 0` and `b1 = 1`.  
+
+```{r demo_using_purr_to_iterate_b}
+purrr::map2_dfr(c(0, -2, 0),
+                c(0, -2, 1),
+                eval_log_dens,
+                my_func = lm_log_dens,
+                my_info = demo_info)
+```
+
+### log-density surfaces
+
+Let's now evaluate the log-likelihood, log-prior, and log-posterior surfaces over the grid of coefficient values. Since there are `r nrow(beta_param_grid)` rows in `beta_param_grid` we will calculate the log-likelihood, log-prior, and log-posterior `r nrow(beta_param_grid)` times. To do so, we set the first two arguments to the `purrr::map2_dfr()` function to be `beta_param_grid$beta_0` and `beta_param_grid$beta_1`, respectively. The resulting data.frame is assigned to the `grid_res_10` object.  
+
+```{r, run_log_dens_eval_10}
+grid_res_10 <- purrr::map2_dfr(beta_param_grid$beta_0,
+                               beta_param_grid$beta_1,
+                               eval_log_dens,
+                               my_func = lm_log_dens,
+                               my_info = demo_info)
+```
+
+Show a glimpse of the `grid_res_10` object below, to confirm the size of the data set.  
+
+```{r, glimpse_grid_result_10}
+grid_res_10 %>% glimpse()
+```
+
+We will visualize the contours of the log-likelihood, log-prior, and log-posterior relative to each other. Creating such a figure requires some book keeping steps that might seem confusing at first, and I have not shown the steps to create such complex figures this semester. The following sections go through each of the steps necessary to make such a figure, if you are interested to learn how to make complex visualizations. You will not be tested on the code in the following sections, but it can be helpful to see these steps since they require useful data manipulation techniques such as reshaping and merging data sets.  
+
+#### wide vs tall data sets
+
+We can visualize the contours of the log-likelihood, log-prior, and log-posterior relative to each other in `ggplot2` by using three different geometric object calls. We will need one call for each column in the `grid_res_10` object, after we merge in the coefficient grid. However, the more "tidy" or "ggplot-way" to accomplish this task is to reshape or reformat the data set. Remember that `ggplot2` follows the Grammar of Graphics and wants to associate everything within a graphic to a variable. From the values displayed on the x-axis, to the marker color, and even the marker transparency. If you wish to associated something you see on a graph with a variable, `ggplot2` wants you to be explicit about it. Although tedious, these concepts help with reproducibility, transparency, and collaboration across large teams.  
+
+The `grid_res_10` object is a "wide" data set, not necessarily in the sense that there are many columns, but in the sense each variable is associated with a column. Although typically very useful, I want to make a figure where different contours are associated with each variable. For example, I will use different colors to denote the log-prior contours from the log-likelihood contours. In `ggplot2`, we need a variable that we can map to the `color` aesthetic. In the present "wide" format no such variable exists. We can create such a variable by reshaping from a "wide" to a "long" or "tall" data set. Instead of one column per variable, the "tall" data set has a column which stores the original variable names, and a column which stores the values associated with the variable. Essentially, I want to take each column from `grid_res_10` and stack on top of each other, rather than having them "bound" next to each other.  
+
+Converting from "wide" to "tall" within the `tidyverse` is accomplished by the `tidyr::gather()` function. The basic idea is to "pull" or "gather" together different columns into two new variables. The first is the `"key"` column which stores the original variable names. The second is the `"value"` column which stores the value associated with each of the original variables. Any variable we do not want to gather together into the `"key"` column we must specify with the `-` character in front of the name.  
+
+Let's reshape the `grid_res_10` object to "tall" format. First, let's add in the row index as a column via the `tibble::rowid_to_column()` function. The code chunk below prints the first 10 rows to the screen to show what that looks like.  
+
+```{r, show_rowid_in_grid_res_10}
+grid_res_10 %>% 
+  tibble::rowid_to_column() %>% 
+  head(10)
+```
+
+Next, let's use the `tidyr::gather()` function where the `"key"` column is named `term_name` and the `"value"` column is named `log_density`. We do not want to gather together the `rowid` column, so we specify `-rowid` after the `"value"` name is set. A glimpse of the resulting "long" format data set is printed to the screen below.  
+
+```{r, show_long_grid_res_10_a}
+grid_res_10 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  glimpse()
+```
+
+Notice the number of rows in the "long" data set. It's three times that of the original "wide" format data set! Why is it three times? By gathering the columns together, we are stacking each of the three columns from `grid_res_10` on top of each other. We can show that is indeed the case two different ways. First, pipe the "long" format data set into the `count()` function and count up the unique values of the `"key"` column, `term_name`. As shown below, there are three unique values of `term_name`, which correspond to the names of the three original columns in `grid_res_10`: `"log_lik"`, `"log_post"`, and `"log_prior"`. The second column in the result from `count()` gives the number of rows associated with the values of `term_name`. As you see below each value has the same number of rows as the number of rows in the original data set, `r nrow(grid_res_10)`.  
+
+```{r, check_long_format_counts}
+grid_res_10 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name", 
+                value = "log_density",
+                -rowid) %>% 
+  count(term_name)
+```
+
+The second way to confirm that the variables have been stacked togehter is to examine the `rowid` column. This particular column is simply the row index in the original "wide" format data set. So let's filter the "long" format data to just those where `rowid` equals the values 1 and 2. We are therefore looking at the results of the first rows in the original "wide" format data set.  
+
+```{r, check_long_format_rows}
+grid_res_10 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name", 
+                value = "log_density",
+                -rowid) %>% 
+  filter(rowid %in% c(1, 2))
+```
+
+Notice the structure of the result above. The `term_name` column is organized as two rows of `log_lik`, then two rows of `log_prior`, and then two rows of `log_post`. As a comparison, the first two rows of the original "wide" format data are printed to the screen below. The results are consistent between the "long" and "wide" data sets.  
+
+```{r, check_long_format_rows_with_wide}
+grid_res_10 %>% 
+  slice(1:2)
+```
+
+#### Data joining
+
+With the log-densities reshaped into the "long" format, the next step is to merge with the coefficient grid. Data joins or merges is a complete topic to itself. Unfortunately we do not have the time to go through merging in detail. The [R for Data Science book](https://r4ds.had.co.nz/) provides a great introduction and discusses different types of joining operations if you are interested to learn more. The [RStudio cheat sheet](https://rstudio.com/resources/cheatsheets/) on data transformation with `dplyr` is also a good starting place to get a quick high level introduction if you are interested.  
+
+Within this course, data joins will be provided for you, since our focus is mostly on the math behind predictive mdoels. That being said, simple joins are relatively straightforward to comprehend. We can use the `left_join()` function to merge two objects based on a common variable between them. Within the `left_join()` function specify the common variable with the `by` argument. In the code chunk below, the "long" format results are merged with the `beta_param_grid` object based on the row index. The merged data set is piped into `glimpse()` to show that we now have the `beta_0` and `beta_1` with the log-density values.  
+
+```{r, show_left_join_example}
+grid_res_10 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  glimpse()
+```
+
+The `rowid` variable corresponds to unique combinations of the two coefficients, `beta_0` and `beta_1`. The "long" format data stacks the three log-density results on top of each other. As we already saw, that means the `rowid` variable repeats for each of the three log-density "terms". So we should expect each combination of the coefficients to also repeat. Let's confirm that is the case by filtering the "long" and merged data to the first two unique coefficient combinations. We can do that by simply filtering to `rowid %in% c(1, 2)`.  
+
+```{r, check_left_join_example_b}
+grid_res_10 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  filter(rowid %in% c(1, 2))
+```
+
+As shown by the print out above, `beta_1` is a constant value of -4 while `beta_0` alternates between -4 and -3.968. If we print out the first two rows of `beta_param_grid` we will see that the first two combinations of the coefficients slightly change the intercept while the slope is fixed at -4:  
+
+```{r, confirm_first_two_rows_betas}
+beta_param_grid %>% slice(1:2)
+```
+
+#### Grouping
+
+We are almost ready to create the visualization. The data are in the correct format, but we need to make two more calculations in order to make it easy to define the density contours of interest. When I have shown posterior surface contours in lecture, I have stated that the contours correspond to particular probability levels. To calculate those levels, we need to subtract out the maximum log-density value from each of the log-density values. This operation renormalizes each of the log-densities. However, the "long" format data has all three log-density terms in a single column, the `log_density` column. We cannot simply take the `max(log_density)` since that will find the max across all three terms. The code chunk below shows that is exactly what happens. A variable `max_log_dens` is created within a `mutate()` call, and then the number of unique values of `max_log_dens` is printed to the screen. Notice there is just 1 value repeated over all rows of the "long" format data!  
+
+```{r, show_max_log_dens_incorrect}
+grid_res_10 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  count(max_log_dens)
+```
+
+If we would substract the `log_density` values from this single `max_log_dens` we would incorrectly normalize two of the term terms. Instead of finding the absolute max value, we need to find the maximum associated with the log-likelihood, the maximum with respect to the log-prior, and the maximum with respect to the log-posterior. We can force such a structure by providing additional context to the object via the `group_by()` function. Instead of piping the "long" and merged data into `mutate()`, we will first pipe the object into `group_by()` and group by the `term_name` variable. This one step instructrs `dplyr` to perform all subsequent actions within the context of the grouping structure. Thus, when we find the max `log_density` value it will find the maximum associated with each of the three unique values of `term_name`.  
+
+The code chunk below shows that is the case. Notice that the `group_by()` call is before the `mutate()` call, but the `mutate()` call is the same as in the previous code chunk. Then the result is piped to `count()` to show that there are three unique values of `max_log_dens`. The `ungroup()` call is used to remove the additional grouping context, and is something I like to do after making use of the structure.  
+
+```{r, show_max_log_dens_correct_check}
+grid_res_10 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  count(max_log_dens)
+```
+
+To show that the three maximum values correspond to the three unique `term_name`s, the previous code chunk is repeated below, but performing the `count()` operation on both `term_name` and `max_log_dens`. We now see that that the overall max log-density value is associated with the log-prior term.  
+
+```{r, show_max_log_dens_correct_check_2}
+grid_res_10 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  count(term_name, max_log_dens)
+```
+
+The last step before making the figure is to subtract the maximum from each log-density value. Remember that `mutate()` creates a new column in the data set. So all we have to do is to subtrack `max_log_dens` from `log_density`. Let's use a second `mutate()` call to create the variable `log_density_2`. The code chunk below filters to just the first two combinations of the coefficients to show all of the columns in the final object. As you see below, the `log_density_2` column is just `log_density` minus `max_log_dens`. Each value of the log-likelihood is subtracted from the same maximum log-likelihood value, while each value of the log-prior is subtracted from the maximum log-prior value.  
+
+```{r, show_final_data_before_plotting}
+grid_res_10 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  filter(rowid %in% 1:2)
+```
+
+We now have everything in place to create the visualization!  
+
+#### Visualize surfaces
+
+With the data properly structured, the steps to create the visualization are similar to those used to create the log-prior surface visualization from earlier in this report. However, we will not use `geom_raster()` to fill in the contours. We are overlaying several contours together, so we will only display the contour lines themselves and we will use separate colors to denote the log-likelihood, log-prior, and the log-posterior. The visualization is created in the code chunk below by setting the `color` aesthetic to the `term_name` variable using the `stat_contour()` function. The prior mean values of 0 are shown as grey lines, and the true parameter values are shown by dashed red lines.  
+
+```{r, viz_surfaces_10}
+grid_res_10 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  ggplot(mapping = aes(x = beta_1,
+                       y = beta_0)) +
+  geom_hline(yintercept = 0, color = "grey50", size = 1.15) +
+  geom_vline(xintercept = 0, color = "grey50", size = 1.15) +
+  stat_contour(mapping = aes(z = log_density_2,
+                             group = term_name,
+                             color = term_name),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 1.5) + 
+  geom_hline(yintercept = beta_0_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  geom_vline(xintercept = beta_1_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  coord_equal() +
+  ggthemes::scale_color_colorblind("") +
+  theme_bw()
+```
+
+The figure above might be a little challenging to look at. We will start by considering the prior and likelihood, before considering the posterior. The log-prior is shown by light blue contours. These are the same contours we looked at before! The prior means are both equal to 0 and the prior standard deviations are both 1. The likelihood is depicted by the black contours, with its central mode located near 2 for `beta_1` and a little above zero for `beta_0`. None of the likelihood contours contain negative slope values, and the contours range from about -1.5 to +2 for the intercept.  
+
+Comparing the prior and likelihood we see that the inner central modes (the most probable values) are different. The likelihood's mode for the slope is about 2, while the prior has a mode of 0. The likelihood has a mode for the intercept that is positive, but the difference is not as great as the difference between the modes for the slope. We can also see that the likelihood is narrower than the prior. The prior allows values from -4 to +4 for both coefficients, while the likelihood completely rules out negative values for the slopes.  
+
+Now look at the posterior, which is depcited by the orange contours. The posterior's central mode is between the prior and likelihood, but is clearly closer to the likelihood than the prior. In fact, some of the outer contours are very similar between the likelihood and the prior. Why does the posterior seem to follow the likelihood more? Think back to the simple unknown constant mean normal-normal model. We discussed that the posterior is a compromise between the likelihood (the data) and the prior. The posterior mean on the unknown constant mean was the precision weighted average of the sample average and the prior mean. The same concepts apply here to our linear model! The posterior is still a compromise, weighted by the precision of each term. If the likelihood is more precise than the prior, the posterior will be closer to the likelihood. If the prior is more precise than the likelihood, the posterior will be closer to the prior.  
+
+Graphically, the wider the surface is, the more uncertain it is. Greater uncertainty equates to lower precision. The reason why the posterior is closer to the likelihood in this example is therefore because the likelihood is more precise than the prior!  
+
+### Change sample size
+
+Let's now see what happens in the Bayesian setting as we reduce the sample size. We can use the same `eval_log_dens()` and `lm_log_dens()` functions, as long as we change the list of required information. The code chunk below creates a data set with just the first 5 observations, defines the design matrix, and stores the necessary information in the `demo_info_05` list.  
+
+```{r, define_info_N05}
+demo_train_05 <- demo_df %>% 
+  tibble::rowid_to_column("obs_id") %>% 
+  filter(obs_id < 6) %>% 
+  select(x, y)
+
+demo_info_05 <- list(
+  yobs = demo_train_05$y,
+  design_matrix = model.matrix( ~ x, demo_train_05),
+  mu_beta = 0,
+  tau_beta = 1,
+  sigma_use = sigma_true
+)
+```
+
+The log-density values are calculated by calling `purrr::map2_dfr()` just as we did before, but using the information associated with 5 observations rather than 10. Before going through the results, ask yourself what do you think will change? Will the likelihood change? Will the prior change compared to the previous results?  
+
+```{r, run_log_dens_calc_05}
+grid_res_05 <- purrr::map2_dfr(beta_param_grid$beta_0,
+                               beta_param_grid$beta_1,
+                               eval_log_dens,
+                               my_func = lm_log_dens,
+                               my_info = demo_info_05)
+```
+
+Let's now visualize the log-density surfaces by performing the reshaping, merging, and additional manipulations to the `grid_res_05` object. As shown below, the prior contours have not changed! They are the same because our prior has not changed. However, the likelihood contours (shown in black) are different from before. We have fewer observations, and so we should expect the likelihood to be less precise. That is indeed the case since the likelihood surface covers a wider area in the figure. Earlier, when we used `lm()` to fit a model with 5 observations we saw that the slope on `x` was no longer significant. The graphic below shows us why. Even though the maximum likelihood value for the slope is very close to the true parameter value, the likelihood is less precise because we have fewer observations. However, the likelihood is still more precise than the prior even with just 5 observations.  
+
+```{r, viz_surface_05}
+grid_res_05 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  ggplot(mapping = aes(x = beta_1,
+                       y = beta_0)) +
+  geom_hline(yintercept = 0, color = "grey50", size = 1.15) +
+  geom_vline(xintercept = 0, color = "grey50", size = 1.15) +
+  stat_contour(mapping = aes(z = log_density_2,
+                             group = term_name,
+                             color = term_name),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 1.5) + 
+  geom_hline(yintercept = beta_0_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  geom_vline(xintercept = beta_1_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  coord_equal() +
+  ggthemes::scale_color_colorblind("") +
+  theme_bw()
+```
+
+Since the likelihood is different, the posterior is also different compared to the 10 observation case. However, the posterior mode (the inner central region of the posterior contour) is still located between the prior and the likelihood. Since the likelihood is still more precise than the prior, the posterior mode is located closer to the likelihood mode than the prior mode.  
+
+Let's overlay the surfaces from the two cases on top of each other to make it easier to see the differences in the surfaces between 5 and 10 observations. There are a few ways to structure the data to accomplish this task. In the code chunk below the `grid_res_05` and `grid_res_10` objects are stacked together using the `bind_rows()` functions, which appends one data.frame to another. A few extra book keeping steps are including however. Before binding the two objects together, the number of observations, `N`, are added to each data set. The `N` variable is then not used in the gathering operation to reshape the larger data set into "long" format. Why do you think it was important to include the `N` within the `group_by()` call before the `max_log_dens` was calculated?  
+
+The figure is then created by setting the `color` aesthetic within `stat_contour()` to be `as.factor(N)`. This way the contours are colored by the sample size rather than `term_name`. `facet_grid()` is used to create a separate subplot for each term. The resulting figure allows us to compare the surfaces between the different sample sizes directly. Although the figure is rather busy two main things should stand out. First, we can only see one color for the log-prior because the prior has not changed! Second, the likelihood surface with 5 observations is wider than the likelihood surface with 10 samples.  
+
+```{r, viz_compare_surf_05_10}
+grid_res_05 %>% 
+  mutate(N = 5) %>% 
+  tibble::rowid_to_column() %>% 
+  bind_rows(grid_res_10 %>% mutate(N = 10) %>% 
+              tibble::rowid_to_column()) %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid, -N) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(N, term_name) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  ggplot(mapping = aes(x = beta_1,
+                       y = beta_0)) +
+  geom_hline(yintercept = 0, color = "grey50", size = 1.15) +
+  geom_vline(xintercept = 0, color = "grey50", size = 1.15) +
+  stat_contour(mapping = aes(z = log_density_2,
+                             group = interaction(N, term_name),
+                             color = as.factor(N)),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 1.15) + 
+  geom_hline(yintercept = beta_0_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  geom_vline(xintercept = beta_1_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  coord_equal() +
+  facet_grid(.~term_name) +
+  ggthemes::scale_color_calc("N") +
+  theme_bw() +
+  theme(legend.position = "top")
+```
+
+Let's now reduce the sample size further to just 3 observations. We have to create a new design matrix and assemble the information into the required list. The code chunk below creates the necessary data objects and then evaluates the log-densities over the coefficient grid.  
+
+```{r, eval_surfaces_N03}
+demo_train_03 <- demo_df %>% 
+  tibble::rowid_to_column("obs_id") %>% 
+  filter(obs_id < 4) %>% 
+  select(x, y)
+
+demo_info_03 <- list(
+  yobs = demo_train_03$y,
+  design_matrix = model.matrix( ~ x, demo_train_03),
+  mu_beta = 0,
+  tau_beta = 1,
+  sigma_use = sigma_true
+)
+
+grid_res_03 <- purrr::map2_dfr(beta_param_grid$beta_0,
+                               beta_param_grid$beta_1,
+                               eval_log_dens,
+                               my_func = lm_log_dens,
+                               my_info = demo_info_03)
+```
+
+And now let's look at the log-density surfaces when we use just 3 observations. Again the prior is the same as the previous figures. The likelihood surface is now quite different from what we had looked at previously. The likelihood mode how has the slope most likely value to be greater than 2 and the most likely intercept to be negative. The likelihood shape is also very different from what we have seen before. It is clearly more elliptical in shape and is slanted. This represents a relationship between the slope and the intercept. As the slope, `beta_1`, increases the intercept, `beta_0`, decreases.  
+
+```{r, viz_surfaces_N03}
+grid_res_03 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  ggplot(mapping = aes(x = beta_1,
+                       y = beta_0)) +
+  geom_hline(yintercept = 0, color = "grey50", size = 1.15) +
+  geom_vline(xintercept = 0, color = "grey50", size = 1.15) +
+  stat_contour(mapping = aes(z = log_density_2,
+                             group = term_name,
+                             color = term_name),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 1.5) + 
+  geom_hline(yintercept = beta_0_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  geom_vline(xintercept = beta_1_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  coord_equal() +
+  ggthemes::scale_color_colorblind("") +
+  theme_bw()
+```
+
+In the figure above, it might seem like the likelihood is still narrower than the prior. However, the slant in the likelihood surface makes it a little challenging to see the width in each *marginal* direction. The likelihood contours for the intercept (the vertical axis) allow nearly +3 to values out of the viewing window, across the outer most contours. Considering the outer most contours of the likelihood for the slope (the horizontal axis) reveals a similar situation. The outer most contours span about -1 to values out of the viewing window.  
+
+The posterior surface however does not follow the likelihood outside the viewing window. Its outer most contour is (nearly) completely contained within the graphical bounds. Since the posterior is not as wide as the likelihood, it is more precise than the likelihood. How can this be? And why is the posterior mode of the intercept located close to zero, even though the likelihood wants the intercept to be closer to -1? The prior is "pulling", constraining, or regularizing the coefficients away from what the likelihood.  
+
+Let's simplify the figure slightly by removing the log-posterior surface. This way we can focus just on the prior and likelihood. The likelihood mode corresponds to the coefficients that maximize the likelihood. In the figure below, the true parameter values (the red dashed lines are not shown). Instead, -2 and +2 are highlighted as dashed grey lines in both the horizontal and vertical direction.  
+
+```{r, viz_surfaces_N03_no_post}
+grid_res_03 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  filter(term_name != "log_post") %>% 
+  ggplot(mapping = aes(x = beta_1,
+                       y = beta_0)) +
+  geom_hline(yintercept = 0, color = "grey50", size = 1.15) +
+  geom_vline(xintercept = 0, color = "grey50", size = 1.15) +
+  stat_contour(mapping = aes(z = log_density_2,
+                             group = term_name,
+                             color = term_name),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 1.5) + 
+  geom_hline(yintercept = c(-2, 2),
+             color = "grey50", linetype = "dashed", size = 1.05) +
+  geom_vline(xintercept = c(-2, 2),
+             color = "grey50", linetype = "dashed", size = 1.05) +
+  coord_equal() +
+  scale_color_manual("",
+                     values = c("log_prior" = "dodgerblue",
+                                "log_lik" = "black")) +
+  theme_bw()
+```
+
+As discussed in lecture, the Maximum Likelihood Estimate (MLE) minimizes the Sum of Squared Errors (SSE). The posterior makes a compromise between the prior and the likelihood. So in the figure below, examine the location of the likelihood mode relative to the prior. The MLE for the slope greater than 2. Consider that value relative to the standard normal prior on the slope. With a standard normal about 95% of the probability is contained between -2 and +2. Thus, the prior feels that $|\beta_1| > 2$ has just a 5% chance of occuring. Thus, even though the likelihood "thinks" the estimate should be greater than 2, the prior places very little weight on such values. The posterior therefore has contributions from both the prior and the likelihood. The likelihood "pushes" the estimates away from zero, while the prior "pulls" the estimates closer to zero.  
+
+To help visualize that balance, the log-density surfaces are repeated below, but with the transparency of the log-prior and log-likelihood set to 0.5. This way it's easier to see the posterior mode in the middle of the two.  
+
+```{r, viz_surface_N03_b}
+grid_res_03 %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  ggplot(mapping = aes(x = beta_1,
+                       y = beta_0)) +
+  geom_hline(yintercept = 0, color = "grey50", size = 1.15) +
+  geom_vline(xintercept = 0, color = "grey50", size = 1.15) +
+  stat_contour(mapping = aes(z = log_density_2,
+                             group = term_name,
+                             color = term_name,
+                             alpha = term_name),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 1.5) + 
+  geom_hline(yintercept = c(-2, 2),
+             color = "grey50", linetype = "dashed", size = 1.05) +
+  geom_vline(xintercept = c(-2, 2),
+             color = "grey50", linetype = "dashed", size = 1.05) +
+  coord_equal() +
+  ggthemes::scale_color_colorblind("") + 
+  scale_alpha_manual("",
+                     values = c("log_lik" = 0.5,
+                                "log_prior" = 0.5,
+                                "log_post" = 1.0)) +
+  theme_bw()
+```
+
+### Changing prior belief
+
+We could continue studying the behavior of the log-densities at other sample sizes. However, let's now consider what happens if we would change our prior belief. Earlier in the semester we used the terminology of informative vs infinitely diffuse priors, or strong vs weak priors. Another way to describe this is a prior with strong regularization vs a prior with weak regularization.  
+
+Let's see how the posterior surface changes as we change the regularization strength. All we have to do is change the prior standard deviation, `tau_beta`, in the list of required information and run the functions as we did so previously. However, rather than copying and pasting, let's define a function which handles this operation for us. The function `manage_regularize_surface_eval()` allows us to specify the prior standard deviation and the number of observations to consider as the first two input arguments. The third argument is the complete data set, the fourth argument is the function we wish to call to evaluate the log-densities, and the fifth argument is a list of hyperparameters. The last argument is the grid of coefficient values that we will calculate the log-density values over. The function is quite simple. It creates the design matrix based on the desired number of observations and then assembles the list of required information, based on the user supplied arguments. It then uses `purrr::map2_dfr()` to iterate over the coefficient grid. It adds the number of observations and the prior standard deviation to the result to help with book keeping.  
+
+```{r, define_manager_function}
+manage_regularize_surface_eval <- function(tau_beta, num_obs, avail_data, my_func, my_info, b_grid)
+{
+  # create the training set
+  xdata <- avail_data %>% slice(1:num_obs)
+  
+  # add to the list of required information
+  my_info$design_matrix <- model.matrix( ~ x, xdata)
+  my_info$yobs <- xdata$y
+  
+  my_info$tau_beta <- tau_beta
+  
+  # calculate the log-densities and package together
+  purrr::map2_dfr(b_grid$beta_0,
+                  b_grid$beta_1,
+                  eval_log_dens,
+                  my_func = my_func,
+                  my_info = my_info) %>% 
+    mutate(N = num_obs,
+           tau_beta = tau_beta) %>% 
+    tibble::rowid_to_column()
+}
+```
+
+We will use `purrr` to iterate over different prior standard deviations. Even though we have already evaluated the log-densities for $\tau_{\beta} = 1$ at three sample size cases, let's rerun those cases here to keep everything packaged in one place. We will try out prior standard deviations of 25, 5, 1, 1/5, and 1/25. For each $\tau_{\beta}$ value we will consider 3, 5, 10, and 100 samples. This way we can see what happens when we apply very strong regularization with a lot of data (for this particular simple example). The code chunk below creates the grid of values using `expand.grid()` and sets up the hyperparameters with the prior mean of 0 and the fixed noise value.  
+
+```{r, setup_study_grid_regularize}
+reg_obs_grid <- expand.grid(tau_beta = c(1/25, 1/5, 1, 5, 25),
+                            num_obs = c(3, 5, 10, 100),
+                            KEEP.OUT.ATTRS = FALSE,
+                            stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tbl_df()
+
+hyper_list <- list(
+  mu_beta = 0,
+  sigma_use = sigma_true
+)
+```
+
+We can iterate over all combinations of the prior standard deviation and the number of observations using one of the `purrr::map2_*` family of functions. Since the result of `manage_regularize_surface_eval` is a data.frame, we will use the `purrr::map2_dfr()` function, just as we have used throughout this report. We are thus using `purrr` to call a function which itself calls `purrr`. If you run this code chunk yourself, it might take a minute to complete.  
+
+```{r, run_regularize_study}
+reg_obs_study_results <- purrr::map2_dfr(reg_obs_grid$tau_beta,
+                                         reg_obs_grid$num_obs,
+                                         manage_regularize_surface_eval,
+                                         avail_data = demo_df,
+                                         my_func = lm_log_dens,
+                                         my_info = hyper_list,
+                                         b_grid = beta_param_grid)
+```
+
+Let's now visualize log-density surfaces for each combination of the prior standard deviation and the number of observations. We will use the same process to create the surface contours, but now the `group_by()` operation will include `N` and `tau_beta`. We will create separate subplots for each combination of `N` and `tau_beta` via `facet_grid()`. The figure below may take a minute to render if you are running the code yourself.  
+
+```{r, viz_reg_study_surfaces, warning=FALSE, message=FALSE}
+reg_obs_study_results %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid, -N, -tau_beta) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name, N, tau_beta) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  ggplot(mapping = aes(x = beta_1,
+                       y = beta_0)) +
+  geom_hline(yintercept = 0, color = "grey50", size = 0.85) +
+  geom_vline(xintercept = 0, color = "grey50", size = 0.85) +
+  stat_contour(mapping = aes(z = log_density_2,
+                             group = interaction(N, tau_beta, term_name),
+                             color = term_name),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9))) + 
+  coord_equal() +
+  facet_grid(N ~ tau_beta, labeller = "label_both") +
+  ggthemes::scale_color_colorblind("") + 
+  theme_bw()
+```
+
+The above figure has the prior standard deviation, $\tau_{\beta}$, increase left to right, and the number of observations, $N$, increase top to bottom. The prior is therefore most precise in the left most column of subplots and the prior is the least precise in the right most column. The prior is so uncertain, vague, or diffuse in the right most column that none of the usual contour lines are even visible on the screen. The likelihood is most precise in the bottom most row of subplots, and is least precise in the upper most row.  
+
+When the prior standard deviation is high, and thus the prior is very diffuse, the posterior lines up almost perfectly with the likelihood. That's why in the right most column of subplots we can really only see the orange contours. The posterior and likelihood fall right on top of each other. The prior has very little effect, or the regularization strenght is so low, all that matters is driving down the error relative to the training points.  
+
+As we decrease the prior standard deviation, and thus increase the regularization strength, the prior "pulls" the posterior away from the likelihood. Regularization helps us not get fooled by noise in small data situations, or when the number of predictors/features/inputs is high. Regularization therefore helps guard against overfitting a model to the training data.  
+
+However, as we continue to increase the regularization, at some point the regularization completely overwhelms the data. The prior therefore drives model behavior. Can the data ever overcome such a situation? Consider the column of subbplots associated with `tau_beta = 0.2` in the above figure. Notice that as the likelihood precision increases as the sample size goes from 3 to 5 to 10, it does not seem like the posterior moves all that far from the prior. However, with 100 observations the posterior (the orange contours) seems to be in the middle of the prior and likelihood. To help see that easier, the code chunk below shows the 4 sample sizes just for the `tau_beta = 0.2` case. The subplots are zoomed in closer to the area around the prior, so the viewing window is different from the previous set of figures.  
+
+```{r, viz_reg_study_one_tau_beta}
+reg_obs_study_results %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid, -N, -tau_beta) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name, N, tau_beta) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  filter(tau_beta == 0.2) %>% 
+  ggplot(mapping = aes(x = beta_1,
+                       y = beta_0)) +
+  geom_hline(yintercept = 0, color = "grey50", size = 0.85) +
+  geom_vline(xintercept = 0, color = "grey50", size = 0.85) +
+  stat_contour(mapping = aes(z = log_density_2,
+                             group = interaction(N, tau_beta, term_name),
+                             color = term_name),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9))) + 
+  coord_equal(xlim = c(-1, 2.5), ylim = c(-1.5, 1.5)) +
+  facet_wrap( ~ N, labeller = "label_both") +
+  ggthemes::scale_color_colorblind("") + 
+  theme_bw()
+```
+
+The above figure shows that once the likelihood has become more precise than the prior the posterior will be closer to the likelihood, even when the prior itself is quite precise. It is the same story even with the most precise prior that we considered, with $\tau_{\beta} = 0.04$. The prior is so precise that it still dominates the posterior even when we use all 100 observations. We would need to collect more (or for this synthetic data example generate more) observations in order for the data to move the posterior away from the prior.  
+
+```{r, viz_reg_study_one_tau_beta_b}
+reg_obs_study_results %>% 
+  tidyr::gather(key = "term_name",
+                value = "log_density",
+                -rowid, -N, -tau_beta) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name, N, tau_beta) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  filter(tau_beta == 0.04) %>% 
+  ggplot(mapping = aes(x = beta_1,
+                       y = beta_0)) +
+  geom_hline(yintercept = 0, color = "grey50", size = 0.85) +
+  geom_vline(xintercept = 0, color = "grey50", size = 0.85) +
+  stat_contour(mapping = aes(z = log_density_2,
+                             group = interaction(N, tau_beta, term_name),
+                             color = term_name),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9))) + 
+  coord_equal(xlim = c(-1, 2.5), ylim = c(-1.5, 1.5)) +
+  facet_wrap( ~ N, labeller = "label_both") +
+  ggthemes::scale_color_colorblind("") + 
+  theme_bw()
+```
+
+### Common priors
+
+In lecture I discussed common or default prior settings usually set the prior standard deviation between 1 to 10 (in the standardized unit scale). Increasing the prior standard deviation above 10 allows greater potential for overfitting, and driving the prior standard deviation much less than 1 allows greater potential for underfitting.  
+
+## Derivations
+
+Hopefully the additional graphics helps provide context around what it means for the prior to "pull" or regularize the parameters away from the likelihood. Let's now step back into the math to relate the graphics to the equations. It is easy to forget about the mathematical structure when we use existing functions, so let's go through the equations directly.  
+
+Earlier in this report we wrote out the un-normalized log-posterior. Let's repeat that below, but with the general prior mean of $\mu_{\beta}$ rather than setting it to zero.  
+
+$$ 
+\log \left[ p\left( \beta_0, \beta_1 \mid \mathbf{x}, \mathbf{y}, \sigma \right) \right] \propto \sum_{n=1}^{N}\left( \log \left[ \mathrm{normal} \left( y_n \mid \mu_n, \sigma \right) \right]\right) + \sum_{d=0}^{D=1}\left(\log\left[ \mathrm{normal}\left( \beta_d \mid \mu_{\beta}, \tau_{\beta} \right) \right] \right)
+$$
+
+The above expression is what we programmed within the `lm_log_dens()` function. We will now step through the two contributions to the log-posterior, starting with the log-likelihood. The log-likelihood was calculated in `lm_log_dens()` by the line of code:  
+
+`sum(dnorm(x = my_info$yobs, mean = mu, sd = sigma_use, log=TRUE))`  
+
+The expressions that are evaluated when these operations are performed are:  
+
+$$ 
+\sum_{n=1}^{N}\left( \log \left[ \mathrm{normal} \left( y_n \mid \mu_n, \sigma \right) \right]\right) = \sum_{n=1}^{N} \left( -\frac{1}{2} \log \left[ \sigma^2 \right] - \frac{1}{2} \log \left[2 \pi \right] - \frac{1}{2\sigma^2} \left(y_n - \mu_n \right)^{2} \right)
+$$
+
+Note that for standard linear models the noise, $\sigma$, is constant. This allows us to simplify the log-likelihood to:  
+
+$$ 
+\sum_{n=1}^{N}\left( \log \left[ \mathrm{normal} \left( y_n \mid \mu_n, \sigma \right) \right]\right) = -\frac{N}{2} \log \left[ \sigma^2 \right] - \frac{N}{2} \log \left[ 2 \pi \right] - \frac{1}{2\sigma^2} \sum_{n=1}^{N} \left( \left( y_n - \mu_n \right)^{2} \right)
+$$
+
+The expression above is evaluated every time the `sum(dnorm(...))` code is called within the `lm_log_dens()` function. Let's review the important elements of this expression, starting out by dropping the constant term:  
+
+$$ 
+\sum_{n=1}^{N}\left( \log \left[ \mathrm{normal} \left( y_n \mid \mu_n, \sigma \right) \right]\right) \propto -\frac{N}{2} \log \left[ \sigma^2 \right] - \frac{1}{2\sigma^2} \sum_{n=1}^{N} \left( \left( y_n - \mu_n \right)^{2} \right)
+$$
+
+Since we have been assuming $\sigma$ is known, we can drop the $\log \left[ \sigma^2 \right]$ term as well. In general we would not drop this term if we working with an unknown $\sigma$. When $\sigma$ is known though, the expression simplifies to:  
+
+$$ 
+\sum_{n=1}^{N}\left( \log \left[ \mathrm{normal} \left( y_n \mid \mu_n, \sigma \right) \right]\right) \propto - \frac{1}{2\sigma^2} \sum_{n=1}^{N} \left( \left( y_n - \mu_n \right)^{2} \right)
+$$
+
+The term within the summation over the observations is important. The mean trean, $\mu_n$, is the model. For the example we have worked with in this markdown the mean trend is just:  
+
+$$ 
+\mu_n = \beta_0 + \beta_1 \times x_n
+$$
+
+In general, as discussed earlier in the report, if we have $D$ inputs or features, we can rewrite the model as the inner product:  
+
+$$ 
+\mu_n = \mathbf{x}_{n,:} \boldsymbol{\beta}
+$$
+
+The difference between the response, $y_n$, and the mean trend, $\mu_n$, is just the **error** or **residual**, $\epsilon_n$, between the response and the model. For the simple example in this markdown the error at the $n$-th observation is:  
+
+$$ 
+\epsilon_n = y_n - \mu_n = y_n - \left(\beta_0 + \beta_1 \times x_n \right)
+$$
+
+And the error for the $n$-th observation in the general case is:  
+
+$$ 
+\epsilon_n = y_n - \mu_n = y_n - \mathbf{x}_{n,:} \boldsymbol{\beta}
+$$
+
+The summation series can then be rewritten as:  
+
+$$ 
+\sum_{n=1}^{N} \left( \left( \epsilon_n \right)^{2} \right)
+$$
+
+The error of each observation is squared and then all observations are summed together. The summation series is therefore the Sum of Squared Errors ($SSE$). The $SSE$ can be rewritten as a summation series or completely in matrix-vector notation using the design matrix, $\mathbf{X}$:  
+
+$$ 
+SSE = \sum_{n=1}^{N} \left( \left( y_n - \mathbf{x}_{n,:} \boldsymbol{\beta} \right)^{2} \right) = \left( \mathbf{y} - \mathbf{X} \boldsymbol{\beta}\right)^T \left( \mathbf{y} - \mathbf{X} \boldsymbol{\beta} \right)
+$$
+
+Using the $SSE$, we can rewrite the log-likelihood for a fixed $\sigma$ up to a normalizing constant to be:  
+
+$$ 
+\sum_{n=1}^{N}\left( \log \left[ \mathrm{normal} \left( y_n \mid \mu_n, \sigma \right) \right]\right) \propto - \frac{1}{2\sigma^2} SSE
+$$
+
+This is why maximizing the likelihood for a linear model is analogous to minimizing the SSE.  
+
+Let's now consider the log-prior's contribution to the log-posterior. In this markdown, since $\sigma$ was assumed known the `unknowns` argument to `lm_log_dens()` corresponded to the unknown coefficients, the $\boldsymbol{\beta}$ parameters. The `log_prior` calculation within `lm_log_dens()` is repeated below:  
+
+`sum(dnorm(x = unknowns, mean = my_info$mu_beta, sd = my_info$tau_beta, log=TRUE))`  
+
+The expression that is evaluated behind the scenes when the above line of code is called is written below:  
+
+$$ 
+\sum_{d=0}^{D=1}\left(\log\left[ \mathrm{normal}\left( \beta_d \mid \mu_{\beta}, \tau_{\beta} \right) \right] \right) = \sum_{d=0}^{D=1} \left( -\frac{1}{2} \log \left[ \tau_{\beta}^{2}\right] -\frac{1}{2} \log \left[2 \pi\right] -\frac{1}{2\tau_{\beta}^{2}} \left(\beta_d - \mu_{\beta} \right)^{2} \right)
+$$
+
+It is important note that the above expression is the same setup as the log-likelihood because standard linear models use Gaussian likelihoods and we are using independent Gaussian priors on the coefficients. Also, remember that we have assumed a shared or common prior mean and prior standard deviation for all $\boldsymbol{\beta}$ parameters. We did not have to do so, we could use separate prior means for each coefficient and/or separate prior standard deviations. Using the same values for each coefficient is convenient though.  
+
+Another important point is that the whether prior means and prior standard deviations are the same across all parameters or not, all of these *hyperparameters* are known. We specify them up front and so we are **not** learning them when we are learning the coefficients. Thus, we fit the model based on assumed values for $\mu_{\beta}$ and $\tau_{\beta}$. This allows us to drop all terms that do not involve the unknown $\beta_d$ coefficients, and thus simplify the expression to:  
+
+$$ 
+\sum_{d=0}^{D=1}\left(\log\left[ \mathrm{normal}\left( \beta_d \mid \mu_{\beta}, \tau_{\beta} \right) \right] \right) \propto -\frac{1}{2\tau_{\beta}^{2}} \sum_{d=0}^{D=1} \left( \left(\beta_d - \mu_{\beta} \right)^{2} \right)
+$$
+
+The above expression is written specifically for the example problem in this markdown which had a single input. Hence why $D=1$ in the summation series. Let's generalize now by just writing the expression in terms of the arbitrary number of inputs/features:  
+
+$$ 
+\sum_{d=0}^{D}\left(\log\left[ \mathrm{normal}\left( \beta_d \mid \mu_{\beta}, \tau_{\beta} \right) \right] \right) \propto -\frac{1}{2\tau_{\beta}^{2}} \sum_{d=0}^{D} \left( \left(\beta_d - \mu_{\beta} \right)^{2} \right)
+$$
+
+Let's now combine the expressions for the log-likelihood with the log-prior, to write out the log-posterior up to a normalizing constant. Let's also stick with working in the more general setting with $D$ inputs/features stored in the design matrix $\mathbf{X}$. The log-posterior on the $\boldsymbol{\beta}$ parameters is written below:  
+
+$$ 
+\log \left[ p\left( \boldsymbol{\beta} \mid \mathbf{X}, \mathbf{y}, \sigma \right) \right] \propto - \frac{1}{2\sigma^2} SSE -\frac{1}{2\tau_{\beta}^{2}} \sum_{d=0}^{D} \left( \left(\beta_d - \mu_{\beta} \right)^{2} \right)
+$$
+
+Let's now go ahead and set the common prior mean to zero, $\mu_{\beta} = 0$, which simplifies the log-priors contribution to the log-posterior:  
+
+$$ 
+\log \left[ p\left( \boldsymbol{\beta} \mid \mathbf{X}, \mathbf{y}, \sigma \right) \right] \propto - \frac{1}{2\sigma^2} SSE -\frac{1}{2\tau_{\beta}^{2}} \sum_{d=0}^{D} \left( \left(\beta_d \right)^{2} \right)
+$$
+
+Rearrange by factoring out the noise term:  
+
+$$ 
+\log \left[ p\left( \boldsymbol{\beta} \mid \mathbf{X}, \mathbf{y}, \sigma \right) \right] \propto - \frac{1}{2\sigma^2} \left(SSE + \left(\frac{\sigma^2}{\tau_{\beta}^{2}}\right) \sum_{d=0}^{D}\left(\beta_{d}^{2} \right) \right)
+$$
+
+And now define the regularization or penalty factor to be the ratio of the $\sigma^2$ (the squared noise) and the prior variance:  
+
+$$ 
+\lambda = \frac{\sigma^2}{\tau_{\beta}^{2}}
+$$
+
+The log-posterior, up to a normalizing constant, simplifies to:  
+
+$$ 
+\log \left[ p\left( \boldsymbol{\beta} \mid \mathbf{X}, \mathbf{y}, \sigma \right) \right] \propto - \frac{1}{2\sigma^2} \left(SSE + \lambda \sum_{d=0}^{D}\left(\beta_{d}^{2} \right) \right)
+$$
+
+Let's think through the above expression in terms of optimization. The sum of squared errors ($SSE$) is the error or cost function we wish to minimize. So we search for the coefficients that minimize the $SSE$ as much as possible. However, the prior modifies that cost function. Minimizing the $SSE$ is **not** the only term within the objective function. We also must minimize the sum of the squares of the coefficient values! The complete objective function therefore has two potentially competing contributions. The competition comes about if large coefficient values produce the "best fits", and thus drive down the $SSE$ as much as possible. However, large coefficient values increase the prior contribution by increasing the sum of squared coefficient values. The prior contribution therefore acts as a penalty which "pulls" coefficients back towards zero. The optimal coefficient estimates are those that strike the balance between the $SSE$ and the prior term. That optimal balance corresponds to the posterior mode which we have visualized throughout this markdown.  
+
+It should be noted that the sum of squared coefficients penalty term can also be written in vector notation using the inner-product of the $D+1$ column vector $\boldsymbol{\beta}$:  
+
+$$ 
+\log \left[ p\left( \boldsymbol{\beta} \mid \mathbf{X}, \mathbf{y}, \sigma \right) \right] \propto - \frac{1}{2\sigma^2} \left(SSE + \lambda \times \boldsymbol{\beta}^{T} \boldsymbol{\beta} \right)
+$$
+
+Substituting in the matrix notation expression for the $SSE$ gives the complete expression for the log-posterior up to a normalizing constant when $\sigma$ is known:  
+
+$$ 
+\log \left[ p\left( \boldsymbol{\beta} \mid \mathbf{X}, \mathbf{y}, \sigma \right) \right] \propto - \frac{1}{2\sigma^2} \left(\left( \mathbf{y} - \mathbf{X} \boldsymbol{\beta}\right)^T \left( \mathbf{y} - \mathbf{X} \boldsymbol{\beta} \right) + \lambda \times \boldsymbol{\beta}^{T} \boldsymbol{\beta} \right)
+$$
+
+The above expression is essentially what is being calculated (up to a normalizing constant) within `lm_log_dens()` within the log-likelihood and log-prior terms are summed together.  
+
+### Closed form solutions
+
+#### Infinitely diffuse prior
+
+Although we discussed the posterior graphically in this markdown, we also stepped through the derivation of the analytic solution to the posterior in lecture. We derived the gradient and Hessian matrix assuming an infinitely diffuse prior. We will not repeat all of those calculations here. Please see the lecture slides from Week 06 for those detailed steps.  
+
+That said, let's go through the important points about the closed form solutions. We showed that when assuming an infinitely diffuse prior the posterior follows the likelihood. Using the regularization viewpoint, an infinitely diffuse prior has $\tau_{\beta} \rightarrow \infty$. The penalty factor, $\lambda$, is related to the inverse of $\tau_{\beta}$. Thus with the prior standard deviation approaching infinity, the penalty factor approaches 0. With $\lambda \rightarrow 0$, the log-prior's contribution to the log-posterior also approaches zero: $\lambda \times \boldsymbol{\beta}^{T} \boldsymbol{\beta} \rightarrow 0$. The log-posterior thus simplifies to:  
+
+$$ 
+\log \left[ p\left( \boldsymbol{\beta} \mid \mathbf{X}, \mathbf{y}, \sigma \right) \right] \rightarrow - \frac{1}{2\sigma^2} \left(\left( \mathbf{y} - \mathbf{X} \boldsymbol{\beta}\right)^T \left( \mathbf{y} - \mathbf{X} \boldsymbol{\beta} \right) \right) = -\frac{1}{2\sigma^2} \times SSE
+$$
+
+The Under such conditions the posterior mode (the max a posteriori estimate or MAP) is identical to the MLE, which is equivalent to the OLS estimate. The OLS estimate to the coefficients of the linear model is given below:  
+
+$$ 
+\boldsymbol{\beta}_{OLS} = \left( \mathbf{X}^{T} \mathbf{X} \right)^{-1} \mathbf{X}^T \mathbf{y}
+$$
+
+The OLS estimate does not depend directly on the noise, $\sigma$. However, it does depend on the input/feature values. The $\mathbf{X}^{T} \mathbf{y}$ term essentially tells us how the response is related to each feature, while the $\left( \mathbf{X}^{T} \mathbf{X} \right)^{-1}$ terms gives us an idea about how features relate each other. The $\mathbf{X}^{T} \mathbf{X}$ quantity is so important it is given name, the matrix sum of squares. As we saw in lecture, the Hessian matrix of the log-posterior with respect to the coefficients is directly related to the matrix sum of squares. The posterior covariance matrix assuming an infinitely diffuse prior is then related to the inverse of the matrix sum of squares:  
+
+$$ 
+\mathrm{cov} \left( \boldsymbol{\beta}, \boldsymbol{\beta} \right) = \sigma^2 \left( \mathbf{X}^{T} \mathbf{X} \right)^{-1}
+$$
+
+The posterior distribution assuming no regularization is then:  
+
+$$ 
+p\left( \boldsymbol{\beta} \mid \mathbf{X}, \mathbf{y}, \sigma \right) = \mathcal{N} \left(\boldsymbol{\beta} \mid \, \left( \mathbf{X}^{T} \mathbf{X} \right)^{-1} \mathbf{X}^T \mathbf{y}, \, \sigma^2 \left( \mathbf{X}^{T} \mathbf{X} \right)^{-1} \right)
+$$
+
+#### Informative prior
+
+When we have an informative prior which regularizes the parameters, the posterior mode will no longer be the same as the OLS estimate. We saw this graphically throughout this report, and we also discussed the analytic, closed form solution in Week 06. In lecture, we denoted the prior as the more general MVN distribution with a mean vector $\mathbf{b}_0$ and covariance matrix $\mathbf{B}_0$:  
+
+$$ 
+\boldsymbol{\beta} \mid \mathbf{b}_0, \mathbf{B}_0 \sim \mathcal{N} \left( \boldsymbol{\beta} \mid \mathbf{b}_0, \mathbf{B}_0 \right)
+$$
+
+In lecture, the posterior distribution was then written in terms of the posterior mean vector $\mathbf{b}_N$ and the posterior covariance matrix $\mathbf{B}_N$:  
+
+$$ 
+\boldsymbol{\beta} \mid \mathbf{X}, \mathbf{y}, \sigma \sim \mathcal{N} \left( \boldsymbol{\beta} \mid \mathbf{b}_N, \mathbf{B}_N \right)
+$$
+
+The posterior covariance matrix is defined through the posterior precision matrix, $\mathbf{B}_{N}^{-1}$, and the expression is given below:  
+
+$$ 
+\mathbf{B}_{N}^{-1} = \mathbf{B}_{0}^{-1} + \frac{1}{\sigma^2} \mathbf{X}^{T} \mathbf{X}
+$$
+
+In words, the posterior precision is the sum of the prior precision and the data precision. The data precision should look familiar, it's the inverse of the posterior covariance matrix assuming no regularization! Thus, the matrix sum of squares is also an important quantity for the case with an informative or regularizing prior.  
+
+The expression for the posterior mean, $\mathbf{b}_{N}$, is written below. It might seem complex at first, but it is simply a precision weighted average between the prior mean and the "data mean". The "data mean" represents how the response is related to each of the features, just as was described with the OLS estimate earlier. The "data mean" is weighted by the inverse of the known squared noise, $\sigma^2$. The prior mean is weighted by the prior precision matrix.  
+
+$$ 
+\mathbf{b}_N = \mathbf{B}_N \left( \mathbf{B}_{0}^{-1} \mathbf{b}_0 + \frac{1}{\sigma^2} \mathbf{X}^{T} \mathbf{y} \right)
+$$
+
+We have actually visualized the behavior of the posterior mean and posterior precision matrix throughout this markdown. It may not have seemed to be the case, but the log-posterior defined in the `log_lm_dens()` is "building" up the contributions from the prior and likelihood. The above formula is the location of the center of the posterior surface contours.  
+
+Let's now apply the exact prior we have used throughout this markdown to the closed form solution. We assumed all coefficients have a shared prior mean, $\mu_{\beta}$. Thus, the prior mean vector can be written as:  
+
+$$ 
+\mathbf{b}_0 = \mu_{\beta} \times \mathbb{1}_{D+1}
+$$
+
+where $\mathbb{1}_{D+1}$ denotes a $D+1$ column vector of 1's. We also assumed each coefficient to be independent with a shared prior standard deviation of $\tau_{\beta}$. The prior covariance matrix can be written using the identity matrix:  
+
+$$ 
+\mathbf{B}_0 = \tau_{\beta}^2 \times \mathbb{I}_{D+1,D+1}
+$$
+
+where $\mathbb{I}_{D+1,D+1}$ denotes a $\left( D + 1\right) \times \left( D + 1\right)$ identity matrix which has zeros in all elements, except for the main diagonal. Since the prior covariance matrix is diagonal, the prior precision matrix is just the inverse of each element along the main diagonal:  
+
+$$ 
+\mathbf{B}_{0}^{-1} = \frac{1}{\tau_{\beta}^{2}} \times \mathbb{I}_{D+1,D+1}
+$$
+
+The posterior precision matrix for our setup is then:  
+
+$$ 
+\mathbf{B}_{N}^{-1} = \frac{1}{\tau_{\beta}^{2}} \times \mathbb{I}_{D+1,D+1} + \frac{1}{\sigma^2} \mathbf{X}^{T} \mathbf{X}
+$$
+
+Which can be rearranged to be written in terms of the regularization factor, $\lambda$. First factor out the noise and change the order of the terms (just to keep things similar to our earlier expressions):  
+
+$$ 
+\mathbf{B}_{N}^{-1} = \frac{1}{\sigma^2} \left( \mathbf{X}^{T} \mathbf{X} + \frac{\sigma^2}{\tau_{\beta}^{2}} \times \mathbb{I}_{D+1,D+1} \right)
+$$
+
+Substitute in the definition of the regularization factor:  
+
+$$ 
+\mathbf{B}_{N}^{-1} = \frac{1}{\sigma^2} \left( \mathbf{X}^{T} \mathbf{X} + \lambda \times \mathbb{I}_{D+1,D+1} \right)
+$$
+
+Written this way, we can see another effect of *ridge* regularization. The penalty factor, $\lambda$, is added along the main diagonal of the matrix sum of squares! The *ridge* penalty or the independent Gaussian prior therefore does not impact any of the off-diagonal terms of the posterior precision matrix. However, will regularization impact the posterior correlation? We will return this point later on.  
+
+Let's now plug in our prior specification into the expression for the posterior mean:  
+
+$$ 
+\mathbf{b}_N = \mathbf{B}_N \left( \left( \frac{1}{\tau_{\beta}^{2}} \times \mathbb{I}_{D+1,D+1} \right) \left( \mu_{\beta} \times \mathbb{1}_{D+1} \right) + \frac{1}{\sigma^2} \mathbf{X}^{T} \mathbf{y} \right)
+$$
+
+The matrix product of the identify matrix and the column of ones is also a column of ones. We can simplify the above expression as:  
+
+$$ 
+\mathbf{b}_N = \mathbf{B}_N \left( \frac{\mu_{\beta}}{\tau_{\beta}^{2}} \times \mathbb{1}_{D+1} + \frac{1}{\sigma^2} \mathbf{X}^{T} \mathbf{y} \right)
+$$
+
+The above expression shows that as the prior standard deviation approaches infinity the prior mean has less and less influence over the posterior mean. We can show the same result directly with the penalty factor by factoring out the inverse of the squared noise.  
+
+$$ 
+\mathbf{b}_N = \frac{1}{\sigma^2} \mathbf{B}_N \left( \mu_{\beta}\times \frac{\sigma^2}{\tau_{\beta}^{2}} \times \mathbb{1}_{D+1} + \mathbf{X}^{T} \mathbf{y} \right)
+$$
+
+And now plug in the penalty factor $\lambda$:  
+
+$$ 
+\mathbf{b}_N = \frac{1}{\sigma^2} \mathbf{B}_N \left( \mu_{\beta}\times \lambda \times \mathbb{1}_{D+1} + \mathbf{X}^{T} \mathbf{y} \right)
+$$
+
+With the above expression it is easy to see that if $\lambda = 0$ the prior mean will not have any impact on the posterior mean. Within this markdown we used the common practice of setting the prior mean to be zero, $\mu_{\beta} = 0$. The posterior mean therefore reduces to a simplified expression whether we have strong or weak regularization:  
+
+$$ 
+\mathbf{b}_N = \frac{1}{\sigma^2} \mathbf{B}_N \left( 0 \times \lambda \times \mathbb{1}_{D+1} + \mathbf{X}^{T} \mathbf{y} \right) = \frac{1}{\sigma^2} \mathbf{B}_N \left( \mathbf{X}^{T} \mathbf{y} \right)
+$$
+
+Does this mean that by using prior means of zero we have the same effect as using no regularization, $\lambda = 0$?  
+**No!** The posterior covariance matrix is also impacted by the regularization. The $\lambda$ factor was added to the diagonal of the posterior precision matrix. The posterior covariance matrix is the inverse of the precision matrix:  
+
+$$ 
+\mathbf{B}_N = \sigma^2 \left( \mathbf{X}^{T} \mathbf{X} + \lambda \times \mathbb{I}_{D+1,D+1} \right)^{-1}
+$$
+
+Subtituting in the posterior covariance matrix into the expression for the posterior mean gives:  
+
+$$ 
+\mathbf{b}_N = \frac{1}{\sigma^2} \times \sigma^2 \left( \mathbf{X}^{T} \mathbf{X} + \lambda \times \mathbb{I}_{D+1,D+1} \right)^{-1} \left( \mathbf{X}^{T} \mathbf{y} \right)
+$$
+
+Which simplifies to:  
+
+$$ 
+\mathbf{b}_N = \left( \mathbf{X}^{T} \mathbf{X} + \lambda \times \mathbb{I}_{D+1,D+1} \right)^{-1} \left( \mathbf{X}^{T} \mathbf{y} \right)
+$$
+
+So even with a prior mean equal to zero the prior can influence the posterior. This is exactly what we saw with the graphical results earlier in this report. Large values of $\tau_{\beta}$ and thus small values of $\lambda$ reduce the influence of the prior, while small vaues of $\tau_{\beta}$ and thus large values of $\lambda$ may cause the prior to dominate. Another benefit of the above expression is that it should be easy to see how if there is no regularization, $\lambda=0$, we recover the OLS estimate!  
+
+$$ 
+\mathbf{b}_N \mid \lambda = 0 \rightarrow \left( \mathbf{X}^{T} \mathbf{X} + 0 \times \mathbb{I}_{D+1,D+1} \right)^{-1} \left( \mathbf{X}^{T} \mathbf{y} \right) = \left( \mathbf{X}^{T} \mathbf{X}  \right)^{-1} \left( \mathbf{X}^{T} \mathbf{y} \right) = \boldsymbol{\beta}_{OLS}
+$$
+
+### Matrix sum of squares
+
+Whether we have no regularization or very strong regularization, the matrix sum of squares plays an integral role in the solution. We stepped through how to calculate in Week 06 of lecture, and we will review that now. Let's consider using just the first 3 observations. The three observation training set is printed to the screen below.  
+
+```{r, show_df_N03}
+demo_train_03
+```
+
+We have used the design matrix notation to write out the matrix sum of squares in this report. Let's now write out the alternative expression which makes it more explicit that we must **sum** over all of the observations in the training set. That expression is shown below:  
+
+$$ 
+\mathbf{X}^{T} \mathbf{X} = \sum_{n=1}^{N} \left( \mathbf{x}_{n,:}^{T} \mathbf{x}_{n,:} \right)
+$$
+
+The term within the summation is the **outer-product** of the $n$-th row of the design matrix with itself. You can think of the outer product as "expanding" a vector into a matrix. The matrix sum of squares is therefore summing together a series of outer products. Each outer product corresponds to a particular row of the design matrix.  
+
+Let's write out the matrix operations by hand to see how the summation works. The design matrix for our example in this report with the simple linear basis has two columns, the intercept column and the input column. We can write out the design matrix for this problem as:  
+
+$$ 
+\left[ \begin{array} 
+{rr}
+1 & x_{1} \\
+1 & x_{2} \\
+1 & x_{3} 
+\end{array}
+\right]
+$$
+
+The first row of the design matrix is the row vector $\mathbf{x}_{n=1,:} = \left[1 \quad x_1 \right]$. The outer product for the first row is then the matrix product of a $2 \times 1$ column vector and a $1 \times 2$ row vector:  
+
+$$ 
+\mathbf{x}_{n=1,:}^{T} \mathbf{x}_{n=1,:} = \left[ \begin{array} {rr} 1 & x_1 \end{array} \right]^{T} \left[ \begin{array} {rr} 1 & x_1 \end{array} \right] = \left[ \begin{array} {c} 1 \\ x_1 \end{array} \right] \left[ \begin{array} {rr} 1 & x_1 \end{array} \right] = \left[ \begin{array} {cc} 1 & x_1 \\ x_1 & x_1^2 \end{array} \right]
+$$
+
+The matrix sum of squares for the 3 observation training set is then the summation of three $2 \times 2$ matrices.  
+$$ 
+\mathbf{X}^{T} \mathbf{X} = \mathbf{x}_{n=1,:}^{T} \mathbf{x}_{n=1,:} + \mathbf{x}_{n=2,:}^{T} \mathbf{x}_{n=2,:} + \mathbf{x}_{n=3,:}^{T} \mathbf{x}_{n=3,:}
+$$
+Substitute in each of the three matrices to show that we are indeed summing squared terms. The main diagonals of each observation's contribution squares the features. The $\left[1, 1\right]$ element in each matrix is a 1 because of the intercept column. The $\left[2, 2\right]$ element is the $n$-th observation's input squared. In this simple example, the off-diagonal terms are the input values because there are only two features in our design matrix, the intercept column of 1's and the input itself. Thus, the off-diagonal terms are multiplying $1 \times x_{n}$.  
+
+$$ 
+\mathbf{X}^{T} \mathbf{X} = \left[ \begin{array} {cc} 1 & x_1 \\ x_1 & x_1^2 \end{array} \right] + \left[ \begin{array} {cc} 1 & x_2 \\ x_2 & x_2^2 \end{array} \right] + \left[ \begin{array} {cc} 1 & x_3 \\ x_3 & x_3^2 \end{array} \right]
+$$
+
+Let's now check that this is indeed the case. The code chunk below creates the design matrix associated with the 3 observation training set and our simple linear relationship basis. We have already constructed this matrix and stored it within the `demo_info_03` list, but let's remake it anyway. The `X03` matrix is then printed to screen to show the intercept column of 1's.  
+
+```{r, make_xmat_N03}
+X03 <- model.matrix( ~ x, demo_train_03)
+
+X03
+```
+
+The first row of the design matrix is extracted by subsetting the first row and including the `drop=FALSE` optional argument to keep result as a matrix:  
+
+```{r, extract_first_row_X03_mat}
+X03[1, ,drop=FALSE]
+```
+
+The outer product is then calculated by performing the following operations:  
+
+```{r, calc_first_row_outer_prod_03}
+t(X03[1, ,drop=FALSE]) %*% X03[1, ,drop=FALSE]
+```
+
+The contributions of the second and third observations are calculated similarly:  
+
+```{r, calc_second_row_outer_prod_03}
+t(X03[2, ,drop=FALSE]) %*% X03[2, ,drop=FALSE]
+```
+
+```{r, calc_third_row_outer_prod_03}
+t(X03[3, ,drop=FALSE]) %*% X03[3, ,drop=FALSE]
+```
+
+Let's put this operation into a function to streamline the execution.  
+
+```{r, define_row_outer_prod_func}
+row_outer_product <- function(rid, X)
+{
+  t(X[rid, ,drop=FALSE]) %*% X[rid, ,drop=FALSE]
+}
+```
+
+We can then calculate the matrix sum of squares by summing together the contributions from each of the observations.  
+
+```{r, show_ssmat_calcs_N03}
+row_outer_product(1, X03) + row_outer_product(2, X03) + row_outer_product(3, X03)
+```
+
+Let's now double check our calculations by using the matrix operation directly. It's less to program than using the summation approach.  
+
+```{r, calc_ssmat_direct_N03}
+t(X03) %*% X03
+```
+
+The outputs of the two previous code chunks are in fact the same!  
+
+With the math review completed...**why does this matter?** The matrix sum of squares impacts the posterior covariance of the coefficients. Thus, it impacts the posterior uncertainty and the posterior correlation! If we understand how the inputs/features are organized we will understand how what we can expect to learn. The matrix sum of squares is at the heart of classic experimental design strategies, response surface designs, and the "ABC" optimal designs just for that reason.  
+
+Let's see how that happens by calculating the posterior covariance matrix assuming an infinitely diffuse prior or no regularization for the 3 observation training set. All we have to do is invert the matrix sum of squares and multiply by the noise squared.  
+
+```{r, calc_post_cov_mat_no_reg_03}
+B03_noreg <- sigma_true^2 * solve(t(X03) %*% X03)
+
+B03_noreg
+```
+
+The main diagonal of `B03_noreg` gives the posterior variances of the intercept and the slope. We can calculate the posterior standard deviations therefore by taking the square root of the main diagonal. As shown below, the posterior standard deviation on the slope is 0.85. The 95% uncertainty interval therefore spans about 3.4 units around the posterior mean. The 95% uncertaint interval on the intercept is larger spanning about 4 units around hte posterior mean.  
+
+```{r, calc_post_sds_no_reg_03}
+sqrt(diag(B03_noreg))
+```
+
+Let's now consider the off-diagonal terms from the posterior covariance matrix. To help interpret them, let's convert from the covariance to a correlation matrix.  
+
+```{r, post_corrmat_no_reg_03}
+cov2cor(B03_noreg)
+```
+
+The posterior correlation coefficient between the slope and intercept is about -0.73. Thus, as the slope increases the intercept decreases. We visualized this relationship already when we compared the log-likelihood, log-prior, and log-posterior to the case with 3 observations. We saw that the log-likelihood surface (the black contours) had a negative relationship between the two coefficients. This is the math that governs how that shape comes about.  
+
+To show this is indeed the same as what we already had before, let's evaluate the MVN density using the posterior distribution assuming an infinitely diffuse prior. We have already calculated the posterior covariance matrix. We just need to calculate the posterior mean to complete the distribution. The posterior mean, which is equal to the OLS estimate under these assumptions, is calculated and printed to the screen below.  
+
+```{r, calc_ols_N03}
+b03_ols <- solve(t(X03) %*% X03, t(X03) %*% as.matrix(demo_train_03$y))
+
+b03_ols
+```
+
+The MVN density is evaluated using the same approach that we used for evaluating the prior MVN density at the beginning of this markdown. We change the `mean` and `sigma` arguments to the appropriate objects.  
+
+```{r, calc_log_mvn_density_03_no_reg}
+values_log_post_03_no_reg <- mvtnorm::dmvnorm(as.matrix(beta_param_grid),
+                                        mean = as.vector(b03_ols),
+                                        sigma = B03_noreg,
+                                        log = TRUE)
+```
+
+The log-likelihood's contribution to the log-posterior was calculated previously in the `grid_res_03` object. The code chunk below adds the log-density calculated from the closed form solution to the `grid_res_03` results. The log-likelihood contribution calculated previously is renamed to `from_functions` to denote everything was calculated from the function calls within `lm_log_dens()`. The closed form analytic result is named `analytic` to denote that we calculated the log-density based on the closed form expressions for the mean and covariance matrix. As shown in the graphic below, the two are identical!  
+
+```{r, compare_func_to_analytic_lik_results}
+grid_res_03 %>% 
+  select(from_functions = log_lik) %>% 
+  mutate(analytic = values_log_post_03_no_reg) %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name", 
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  ggplot(mapping = aes(x = beta_1,
+                       y = beta_0)) +
+  geom_hline(yintercept = 0, color = "grey50", size = 1.15) +
+  geom_vline(xintercept = 0, color = "grey50", size = 1.15) +
+  stat_contour(mapping = aes(z = log_density_2,
+                             group = term_name,
+                             color = term_name,
+                             linetype = term_name),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 1.5) + 
+  geom_hline(yintercept = beta_0_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  geom_vline(xintercept = beta_1_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  coord_equal() +
+  ggthemes::scale_color_calc("Likelhood\ncontribution") +
+  scale_linetype_discrete("Likelhood\ncontribution") +
+  theme_bw()
+```
+
+Let's now see what happens when we apply regularization using the prior standard deviation of $\tau_{\beta} = 1$. The penalty factor corresponds to a value of:  
+
+$$ 
+\lambda = \frac{\sigma^2}{\tau_{\beta}^{2}} = \frac{1.44}{1} = 1.44
+$$
+
+Assign the penalty factor to the variable `reg_factor`:  
+
+```{r, calc_lambda_for_stdnormal}
+reg_factor <- (sigma_true / 1)^2
+```
+
+Before calculating the posterior covariance matrix, let's first look at how the regularization term is added to the matrix sum of squares. If you compare the result displayed below to the earlier code chunk that displayed the result of `t(X03) %*% X03` you will see that the off-diagonal terms are identical.  
+
+```{r, show_impact_of_reg_on_ssmat}
+t(X03) %*% X03 + reg_factor * diag(ncol(X03))
+```
+
+The above calculation is related to the posterior precision matrix. The regularization therefore does not change the off-diagonal terms of the posterior precision. However, all elements in the posterior covariance matrix will be impacted by the regularization because we must invert the precision matrix. The regularized posterior covariance matrix is calculated and displayed below.    
+
+```{r, calc_post_covmat_with_reg}
+B03 <- sigma_true^2 * solve(t(X03) %*% X03 + reg_factor * diag(ncol(X03)))
+
+B03
+```
+
+The posterior standard deviations on the coefficients are extracted in the code chunk below. Notice that with the regularization factor of 1.44 we have reduced the posterior standard deviation on the intercept from 1 to about 2/3. The posterior standard deviation on the slope reduced from 0.85 to about 0.6.  
+
+```{r, calc_post_sds_with_reg}
+sqrt(diag(B03))
+```
+
+Let's convert the covariance matrix to a correlation matrix to see the impact on the relationship between the coefficients. As we can see below, the regularization reduced the posterior correlation. Without regularization the correlation coefficient was about -0.73, while with regularization (based on $\tau_{\beta} = 1$) the correlation coefficient is about -0.52.  
+
+```{r, show_post_corrmat_with_reg}
+cov2cor(B03)
+```
+
+As with the likelihood contribution, the math we just stepped through governs the shape of the log-posterior that we visualized earlier. Let's just confirm that to be the case. First, we need to calculate the posterior mean using our regularization factor of 1.44.  
+
+```{r, calc_post_mean_with_reg_03}
+b03 <- solve(t(X03) %*% X03 + reg_factor * diag(ncol(X03)), t(X03) %*% as.matrix(demo_train_03$y))
+
+b03
+```
+
+Next, we need to calculate the MVN density using the regularized posterior mean and covariance matrix.  
+
+```{r, calc_log_post_mvn_with_reg_03}
+values_log_post_03_w_reg <- mvtnorm::dmvnorm(as.matrix(beta_param_grid),
+                                        mean = as.vector(b03),
+                                        sigma = B03,
+                                        log = TRUE)
+```
+
+Finally, let's overlay the two log-posterior surfaces. The surface as calculated through `lm_log_dens()` is displayed as the `from_functions` result while the surface as calculated based on the closed form analytic equations is referred to as `analytic`. As we can see below, the two surfaces are indeed identical!  
+
+```{r}
+grid_res_03 %>% 
+  select(from_functions = log_post) %>% 
+  mutate(analytic = values_log_post_03_w_reg) %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "term_name", 
+                value = "log_density",
+                -rowid) %>% 
+  left_join(beta_param_grid %>% tibble::rowid_to_column(),
+            by = "rowid") %>% 
+  group_by(term_name) %>% 
+  mutate(max_log_dens = max(log_density)) %>% 
+  ungroup() %>% 
+  mutate(log_density_2 = log_density - max_log_dens) %>% 
+  ggplot(mapping = aes(x = beta_1,
+                       y = beta_0)) +
+  geom_hline(yintercept = 0, color = "grey50", size = 1.15) +
+  geom_vline(xintercept = 0, color = "grey50", size = 1.15) +
+  stat_contour(mapping = aes(z = log_density_2,
+                             group = term_name,
+                             color = term_name,
+                             linetype = term_name),
+               breaks = log(c(0.01/100, 0.01, 0.1, 0.5, 0.9)),
+               size = 1.5) + 
+  geom_hline(yintercept = beta_0_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  geom_vline(xintercept = beta_1_true,
+             color = "red", linetype = "dashed", size = 1.05) +
+  coord_equal() +
+  ggthemes::scale_color_calc("Posterior") +
+  scale_linetype_discrete("Posterior") +
+  theme_bw()
+```
+
+## Perspective and conclusions
+
+Everything in this document focused on the simple example of a single input with a linear basis and a known noise, $\sigma$. Real problems will not have a known $\sigma$, and will most likely consist of multiple inputs. In fact, you might have to work with dozens of inputs and consider multiple types of basis expansions (such a polynomials or splines). So why should we bother with this simple example?  
+
+This simple example sets the foundation for the modeling structure and framework. First, it allows us to graph solutions and visually explain behavior that will be too difficult to visualize when there are more inputs. The intuition between the compromise between the prior and the likelihood, or non-Bayesian nomenclature the $SSE$ and the penalty term, holds whether we have 1 input or thousands. In fact, its when there are many inputs and even more features when regularization is really useful at guarding against overfitting. We saw that with the quadratic model example in Week 09 when we fit 9 different polynomial models to noisy data.  
+
+Second, the "structure" of the solution holds even when $\sigma$ is unknown. The design matrix and matrix sum of squares are still very important to the behavior of the model. The OLS estimate is the equation for the coefficients even when $\sigma$ is unknown. The coefficient correlation structure will still be governed by the sum of squares matrix. That does not change. Working with fixed $\sigma$ helps us focus on the important mathematical foundations driving the model beavhior.  
+
+Lastly, why are the models programmed up within the "log-posterior" functions in the lecture notes and the homework assignments? As shown in this report, the log-posterior functions build up the model behavior in several key pieces. We saw how those pieces are the solutions to the problem. However, those closed form analytic solutions only exist under certain assumptions. Although those work for many problems, they do not work for all problems. We saw that in lecture to move to binary classification via logistic regression an analytic solution does not even exist. However, the framework of building up the log-posterior via small pieces carried through. We just had to change what those pieces are, based on the problem at hand.  
+
+The coding practice of specifying all required information, such as the response vector, design matrix, and the prior assumptions and passing that into a function which defines the un-normalized log-posterior is not unique to this course. In fact, it's the standard practice of the modern compiled Stan programming language. Stan includes state-of-the-art full Bayesian solution schemes and allows users to create as simple or as complex a model that they wish. Although we will not go into details about the Stan language within this course, you have the basic understanding of the framework for how the problems are constructed. If you are interested, the Stan documentation has a very good set of [case studies](https://mc-stan.org/users/documentation/case-studies.html) for to get you started. Stan is a compiled language similar to C++, so it can have somewhat of a learning curve if you are not used to compiled languages. APIs exist to call Stan in R, Python, and MATLAB. Libraries have been builtup around Stan to allow using it without having to program directly in the Stan language. [rstanarm](https://mc-stan.org/rstanarm/) is one such library in `R` which allows building models with syntax similar to the `lm()` and `glm()` functions in base `R`. The [brms](https://github.com/paul-buerkner/brms) package is another high level API into Stan which allows users to create custom Stan models directly in the `R` language. There are also more customized libraries for specific modeling tasks, such as Facebook's [Prophet](https://facebook.github.io/prophet/) package for forecasting models.  
